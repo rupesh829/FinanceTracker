@@ -5,5 +5,5 @@ import react from '@vitejs/plugin-react'
 // If your repo is https://github.com/yourname/my-finances, base should be '/my-finances/'.
 export default defineConfig({
   plugins: [react()],
-  base: '/finance-tracker/',
+  base: '/FinanceTracker/',
 })
