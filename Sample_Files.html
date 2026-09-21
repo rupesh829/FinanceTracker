@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enterprise Cash Flow & Savings Tracker</title>
+  <style>
+    :root {
+      --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc;
+      --card-bg: #ffffff; --text: #334155; --success: #16a34a; --danger: #dc2626;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 1.5rem; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    
+    .hidden { display: none !important; }
+    .auth-box { max-width: 400px; margin: 5rem auto; background: var(--card-bg); padding: 2rem; border-radius: 8px; border: 1px solid var(--border); }
+    
+    nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 2px solid var(--border); padding-bottom: 1rem; }
+    .nav-tabs { display: flex; gap: 1rem; }
+    .tab-btn { background: none; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; color: #64748b; padding: 0.5rem 1rem; }
+    .tab-btn.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
+
+    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: var(--card-bg); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border); }
+    .card h4 { font-size: 0.8rem; text-transform: uppercase; color: #64748b; margin-bottom: 0.5rem; }
+    .card .val { font-size: 1.6rem; font-weight: bold; }
+
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 768px) { .form-grid { grid-template-columns: 1fr; } }
+
+    .form-group { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 1rem; }
+    input, select, button { padding: 0.6rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.95rem; }
+    button { background: var(--accent); color: white; border: none; font-weight: 600; cursor: pointer; }
+    button:hover { opacity: 0.9; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div id="authView" class="auth-box">
+    <h2 id="authTitle" style="margin-bottom: 1rem;">Login</h2>
+    <form id="authForm">
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="authEmail" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="authPassword" required>
+      </div>
+      <button type="submit" id="authSubmitBtn">Sign In</button>
+      <p style="margin-top: 1rem; font-size: 0.85rem;">
+        <a href="#" id="toggleAuthMode">Don't have an account? Register</a>
+      </p>
+    </form>
+  </div>
+
+  <div id="appView" class="hidden">
+    <nav>
+      <div class="nav-tabs">
+        <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="tab-btn" onclick="switchTab('income')">Income</button>
+        <button class="tab-btn" onclick="switchTab('expenses')">Expenses</button>
+        <button class="tab-btn" onclick="switchTab('savings')">Savings</button>
+      </div>
+      <div>
+        <span id="userDisplay" style="font-weight: 600; margin-right: 1rem;"></span>
+        <button onclick="logout()" style="background: #64748b; padding: 0.4rem 0.8rem;">Logout</button>
+      </div>
+    </nav>
+
+    <div class="grid-3">
+      <div class="card">
+        <h4>Monthly Projected Income</h4>
+        <div class="val" id="dashIncome" style="color: var(--success);">$0.00</div>
+      </div>
+      <div class="card">
+        <h4>Monthly Projected Expenses</h4>
+        <div class="val" id="dashExpenses" style="color: var(--danger);">$0.00</div>
+      </div>
+      <div class="card">
+        <h4>Net Cash Flow</h4>
+        <div class="val" id="dashNet">$0.00</div>
+      </div>
+    </div>
+
+    <div id="tab-dashboard" class="tab-content">
+      <div class="card">
+        <h3>Cash Flow & Recurring Summary</h3>
+        <p style="margin-top: 0.5rem; color: #64748b;">Overview of all active income, spending, and savings streams.</p>
+        <table id="summaryTable">
+          <thead>
+            <tr><th>Type</th><th>Category</th><th>Source/Name</th><th>Timing</th><th>Amount ($)</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-income" class="tab-content hidden">
+      <div class="card">
+        <h3>Add Income Stream</h3>
+        <form id="incomeForm" class="form-grid" style="margin-top: 1rem;">
+          <div class="form-group">
+            <label>Entry Type</label>
+            <select id="incType" required>
+              <option value="Recurring">Recurring</option>
+              <option value="Ad-hoc">Ad-hoc</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Category</label>
+            <select id="incCategory" required>
+              <option value="Salary">Salary</option>
+              <option value="Dividends">Dividends</option>
+              <option value="Interest">Interest</option>
+              <option value="Real Estate">Real Estate</option>
+              <option value="Business">Business</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Amount ($)</label>
+            <input type="number" step="0.01" id="incAmount" required>
+          </div>
+          <div class="form-group">
+            <label>Frequency</label>
+            <select id="incFrequency">
+              <option value="Monthly">Monthly</option>
+              <option value="Bi-Weekly">Bi-Weekly</option>
+              <option value="Yearly">Yearly</option>
+              <option value="One-Time">One-Time (Ad-hoc)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date / Next Due</label>
+            <input type="date" id="incDate" required>
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <input type="text" id="incDesc" placeholder="e.g. Primary Job, Rental Property A" required>
+          </div>
+          <button type="submit" style="grid-column: span 2;">Save Income</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="tab-expenses" class="tab-content hidden">
+      <div class="card">
+        <h3>Add Expense / Liability</h3>
+        <form id="expenseForm" class="form-grid" style="margin-top: 1rem;">
+          <div class="form-group">
+            <label>Entry Type</label>
+            <select id="expType" required>
+              <option value="Recurring">Recurring</option>
+              <option value="Ad-hoc">Ad-hoc</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Category</label>
+            <select id="expCategory" required>
+              <option value="Mortgage/Rent">Mortgage / Rent</option>
+              <option value="Loans">Loans (Car, Student, Personal)</option>
+              <option value="Insurance">Insurance</option>
+              <option value="Child Expenses">Child Expenses</option>
+              <option value="Credit Card Bills">Credit Card Bills</option>
+              <option value="Utilities">Utilities</option>
+              <option value="Other">Other Necessities</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Amount ($)</label>
+            <input type="number" step="0.01" id="expAmount" required>
+          </div>
+          <div class="form-group">
+            <label>Frequency</label>
+            <select id="expFrequency">
+              <option value="Monthly">Monthly</option>
+              <option value="Yearly">Yearly</option>
+              <option value="One-Time">One-Time (Ad-hoc)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date / Due Date</label>
+            <input type="date" id="expDate" required>
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <input type="text" id="expDesc" placeholder="e.g., Main Street Mortgage, Electricity" required>
+          </div>
+          <button type="submit" style="grid-column: span 2;">Save Expense</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="tab-savings" class="tab-content hidden">
+      <div class="card">
+        <h3>Savings & Investments Goal Tracker</h3>
+        <form id="savingsForm" class="form-grid" style="margin-top: 1rem;">
+          <div class="form-group">
+            <label>Goal Name</label>
+            <input type="text" id="savName" placeholder="e.g. Emergency Fund, Stock Index" required>
+          </div>
+          <div class="form-group">
+            <label>Target Goal Amount ($)</label>
+            <input type="number" step="0.01" id="savTarget" required>
+          </div>
+          <div class="form-group">
+            <label>Current Saved ($)</label>
+            <input type="number" step="0.01" id="savCurrent" required>
+          </div>
+          <div class="form-group">
+            <label>Monthly Contribution Target ($)</label>
+            <input type="number" step="0.01" id="savMonthly" required>
+          </div>
+          <button type="submit" style="grid-column: span 2;">Save Savings Goal</button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // UPDATE THIS WITH YOUR APPS SCRIPT WEB APP URL
+  const API_URL = 'https://script.google.com/macros/s/AKfycbzv2Q7G2ErCnAhtQwGLdLDolBgSTLpBhQ-mL_TxVP7Stvy2FcQWMoXEj1B3x4hwBo6E1w/exec';
+
+  let currentUser = JSON.parse(localStorage.getItem('tracker_user')) || null;
+  let isRegister = false;
+  let store = { Income: [], Expenses: [], Savings: [] };
+
+  // Auth Toggle
+  document.getElementById('toggleAuthMode').addEventListener('click', (e) => {
+    e.preventDefault();
+    isRegister = !isRegister;
+    document.getElementById('authTitle').innerText = isRegister ? 'Register' : 'Login';
+    document.getElementById('authSubmitBtn').innerText = isRegister ? 'Create Account' : 'Sign In';
+    e.target.innerText = isRegister ? 'Already have an account? Login' : "Don't have an account? Register";
+  });
+
+  // Auth Submit
+  document.getElementById('authForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('authEmail').value;
+    const password = document.getElementById('authPassword').value;
+    const action = isRegister ? 'register' : 'login';
+
+    const res = await apiRequest({ action, data: { email, password } });
+    if (res.status === 'success') {
+      currentUser = { userId: res.userId, email: res.email };
+      localStorage.setItem('tracker_user', JSON.stringify(currentUser));
+      initApp();
+    } else {
+      alert(res.message);
+    }
+  });
+
+  function logout() {
+    localStorage.removeItem('tracker_user');
+    currentUser = null;
+    location.reload();
+  }
+
+async function apiRequest(payload) {
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8', // Prevents CORS preflight
+      },
+      body: JSON.stringify(payload)
+    });
+    return await response.json();
+  } catch (err) {
+    console.error('API Error:', err);
+    return { status: 'error', message: 'Failed to connect to backend. Check console/API URL.' };
+  }
+}
+
+  async function loadData() {
+    const res = await apiRequest({ action: 'getData', data: { userId: currentUser.userId } });
+    if (res.status === 'success') {
+      store = res.data;
+      render();
+    }
+  }
+
+  function initApp() {
+    if (!currentUser) return;
+    document.getElementById('authView').classList.add('hidden');
+    document.getElementById('appView').classList.remove('hidden');
+    document.getElementById('userDisplay').innerText = currentUser.email;
+    loadData();
+  }
+
+  function switchTab(tabName) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+    
+    event.target.classList.add('active');
+    document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+  }
+
+  // Forms Event Listeners
+  document.getElementById('incomeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const record = {
+      type: document.getElementById('incType').value,
+      category: document.getElementById('incCategory').value,
+      amount: document.getElementById('incAmount').value,
+      frequency: document.getElementById('incFrequency').value,
+      date: document.getElementById('incDate').value,
+      description: document.getElementById('incDesc').value
+    };
+    await apiRequest({ action: 'addRecord', data: { userId: currentUser.userId, table: 'Income', record } });
+    e.target.reset();
+    loadData();
+  });
+
+  document.getElementById('expenseForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const record = {
+      type: document.getElementById('expType').value,
+      category: document.getElementById('expCategory').value,
+      amount: document.getElementById('expAmount').value,
+      frequency: document.getElementById('expFrequency').value,
+      date: document.getElementById('expDate').value,
+      description: document.getElementById('expDesc').value
+    };
+    await apiRequest({ action: 'addRecord', data: { userId: currentUser.userId, table: 'Expenses', record } });
+    e.target.reset();
+    loadData();
+  });
+
+  document.getElementById('savingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const record = {
+      goal_name: document.getElementById('savName').value,
+      target_amount: document.getElementById('savTarget').value,
+      current_amount: document.getElementById('savCurrent').value,
+      monthly_contribution: document.getElementById('savMonthly').value
+    };
+    await apiRequest({ action: 'addRecord', data: { userId: currentUser.userId, table: 'Savings', record } });
+    e.target.reset();
+    loadData();
+  });
+
+  function render() {
+    let totalMonthlyIncome = 0;
+    let totalMonthlyExpenses = 0;
+
+    const summaryTbody = document.querySelector('#summaryTable tbody');
+    summaryTbody.innerHTML = '';
+
+    store.Income.forEach(i => {
+      const amt = Number(i.amount);
+      totalMonthlyIncome += i.frequency === 'Bi-Weekly' ? amt * 2 : amt;
+      summaryTbody.innerHTML += `<tr>
+        <td><span style="color:var(--success)">Income</span></td>
+        <td>${i.category}</td><td>${i.description}</td><td>${i.frequency}</td>
+        <td>+$${amt.toFixed(2)}</td>
+      </tr>`;
+    });
+
+    store.Expenses.forEach(e => {
+      const amt = Number(e.amount);
+      totalMonthlyExpenses += amt;
+      summaryTbody.innerHTML += `<tr>
+        <td><span style="color:var(--danger)">Expense</span></td>
+        <td>${e.category}</td><td>${e.description}</td><td>${e.frequency}</td>
+        <td>-$${amt.toFixed(2)}</td>
+      </tr>`;
+    });
+
+    const net = totalMonthlyIncome - totalMonthlyExpenses;
+
+    document.getElementById('dashIncome').innerText = `$${totalMonthlyIncome.toFixed(2)}`;
+    document.getElementById('dashExpenses').innerText = `$${totalMonthlyExpenses.toFixed(2)}`;
+    document.getElementById('dashNet').innerText = `$${net.toFixed(2)}`;
+    document.getElementById('dashNet').style.color = net >= 0 ? 'var(--success)' : 'var(--danger)';
+  }
+
+  // Auto Init
+  if (currentUser) initApp();
+</script>
+
+</body>
+</html>
