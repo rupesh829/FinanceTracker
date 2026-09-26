@@ -155,4 +155,23 @@ export function addDays(dateObj, n) {
   d.setDate(d.getDate() + n);
   return d;
 }
+export function nextDueDate(startDate, freqMonths, endDateStr) {
+  if (!freqMonths || !startDate) return null;
+  const today = new Date(todayStr());
+  let k = 1;
+  while (k < 3000) {
+    const d = addMonthsClamped(startDate, k * freqMonths);
+    if (d > today) {
+      if (endDateStr && d > new Date(endDateStr)) return null;
+      return d;
+    }
+    k++;
+  }
+  return null;
+}
+
+export function daysUntil(dateObj) {
+  const today = new Date(todayStr());
+  return Math.round((dateObj - today) / (1000 * 60 * 60 * 24));
+}
 export function toISODate(d) { return d.toISOString().slice(0, 10); }
