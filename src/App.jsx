@@ -1,9 +1,17 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
+<<<<<<< HEAD
 import { LineChart, Landmark, Wallet, X, Calendar } from "lucide-react";
 import InvestmentsPage from "./pages/InvestmentsPage.jsx";
 import DebtsPage from "./pages/DebtsPage.jsx";
 import SalaryPage from "./pages/SalaryPage.jsx";
+=======
+import { LineChart, Landmark, Wallet, X, Calendar, Sunset } from "lucide-react";
+import InvestmentsPage from "./pages/InvestmentsPage.jsx";
+import DebtsPage from "./pages/DebtsPage.jsx";
+import SalaryPage from "./pages/SalaryPage.jsx";
+import RetirementPage from "./pages/RetirementPage.jsx";
+>>>>>>> 5a88851 (Add Retirement page)
 import { getTable } from "./api.js";
 import { COLORS, sansFont, serifFont, fmt, nextDueDate, daysUntil } from "./styles.js";
 
@@ -11,6 +19,10 @@ const tabs = [
   { to: "/investments", label: "Investments", icon: LineChart },
   { to: "/debts", label: "Debt Tracker", icon: Landmark },
   { to: "/salary", label: "Salary Log", icon: Wallet },
+<<<<<<< HEAD
+=======
+  { to: "/retirement", label: "Retirement", icon: Sunset },
+>>>>>>> 5a88851 (Add Retirement page)
 ];
 
 const FREQ_MONTHS = { "Monthly": 1, "Quarterly": 3, "Annually": 12, "None": null };
@@ -126,6 +138,10 @@ export default function App() {
         <Route path="/investments" element={<InvestmentsPage />} />
         <Route path="/debts" element={<DebtsPage />} />
         <Route path="/salary" element={<SalaryPage />} />
+<<<<<<< HEAD
+=======
+        <Route path="/retirement" element={<RetirementPage />} />
+>>>>>>> 5a88851 (Add Retirement page)
       </Routes>
     </div>
   );

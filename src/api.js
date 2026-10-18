@@ -15,7 +15,7 @@ export const API_URL = "https://script.google.com/macros/s/AKfycbyYVYuC2fvaWZYck
 // looked like they worked until a specific id was picked. Fixed once, here,
 // by normalizing every id-like field to a string right after fetch, so nothing
 // downstream has to think about it.
-const ID_FIELDS = ["id", "investmentId", "debtId", "recurringId", "refinancedFromId"];
+const ID_FIELDS = ["id", "investmentId", "debtId", "recurringId", "refinancedFromId", "parentExpenseId"];
 function normalizeIds(rows) {
   return rows.map((r) => {
     const out = { ...r };
