@@ -1,17 +1,23 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { LineChart, Landmark, Wallet, X, Calendar , Sunset } from "lucide-react";
+import { LineChart, Landmark, Wallet, X, Calendar, Sunset, BarChart3, ArrowLeftRight, Receipt } from "lucide-react";
 import InvestmentsPage from "./pages/InvestmentsPage.jsx";
 import DebtsPage from "./pages/DebtsPage.jsx";
 import SalaryPage from "./pages/SalaryPage.jsx";
+import SummaryPage from "./pages/SummaryPage.jsx";
+import TransfersPage from "./pages/TransfersPage.jsx";
+import ExpensesPage from "./pages/ExpensesPage.jsx";
 import RetirementPage from "./pages/RetirementPage.jsx";
 import { getTable } from "./api.js";
 import { COLORS, sansFont, serifFont, fmt, nextDueDate, daysUntil } from "./styles.js";
 
 const tabs = [
+  { to: "/summary", label: "Summary", icon: BarChart3 },
   { to: "/investments", label: "Investments", icon: LineChart },
   { to: "/debts", label: "Debt Tracker", icon: Landmark },
   { to: "/salary", label: "Salary Log", icon: Wallet },
+  { to: "/transfers", label: "Transfers", icon: ArrowLeftRight },
+  { to: "/expenses", label: "Expenses", icon: Receipt },
   { to: "/retirement", label: "Retirement", icon: Sunset },
 ];
 
@@ -106,7 +112,7 @@ export default function App() {
           </div>
         )}
 
-        <nav style={{ display: "flex", gap: 4, borderBottom: `2px solid ${COLORS.ink}` }}>
+        <nav style={{ display: "flex", flexWrap: "wrap", gap: 4, borderBottom: `2px solid ${COLORS.ink}` }}>
           {tabs.map((t) => (
             <NavLink
               key={t.to}
@@ -124,7 +130,10 @@ export default function App() {
         </nav>
       </div>
       <Routes>
-        <Route path="/" element={<Navigate to="/investments" replace />} />
+        <Route path="/" element={<Navigate to="/summary" replace />} />
+        <Route path="/summary" element={<SummaryPage />} />
+        <Route path="/transfers" element={<TransfersPage />} />
+        <Route path="/expenses" element={<ExpensesPage />} />
         <Route path="/investments" element={<InvestmentsPage />} />
         <Route path="/debts" element={<DebtsPage />} />
         <Route path="/salary" element={<SalaryPage />} />
