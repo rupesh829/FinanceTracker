@@ -3,7 +3,7 @@ import { getTable, setTable } from "../api.js";
 import { COLORS, sansFont, serifFont, inputStyle, btnStyle, btnStyleGhost, parseAmount } from "../styles.js";
 import { SEED, BASE_ASSETS, BASE_TIERS, BASE_INFL } from "../retirementSeed.js";
 
-const TAB = { cfg: "RetirementConfig", exp: "RetirementExpenses", itm: "RetirementItems", ast: "RetirementAssets" };
+const TAB = { cfg: "RetirementConfig", exp: "RetirementExpenses", itm: "RetirementItems", ast: "RetirementAssets", act: "RetirementActuals" };
 const bool = (v) => v === true || String(v).toUpperCase() === "TRUE";
 // Indian short format: K / L (lakh) / Cr (crore)
 const fmtI = (v) => {
@@ -16,7 +16,7 @@ const fmtI = (v) => {
 const now = new Date();
 const dobFromAge = (a) => `${now.getFullYear() - a}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 const ageOf = (dob) => { const m = /^(\d{4})-(\d{2})/.exec(dob || ""); return m ? Math.max(0, now.getFullYear() - +m[1] - (now.getMonth() + 1 < +m[2] ? 1 : 0)) : 0; };
-const DEF_FAMILY = { fName: "Father", mName: "Mother", k1Name: "Kid 1", k2Name: "Kid 2", fDob: dobFromAge(40), mDob: dobFromAge(36), k1Dob: dobFromAge(8), k2Dob: dobFromAge(3), retAge: 44, horizonAge: 90, growToRet: false, ledgerFromToday: true };
+const DEF_FAMILY = { fName: "Father", mName: "Mother", k1Name: "Kid 1", k2Name: "Kid 2", fDob: dobFromAge(40), mDob: dobFromAge(36), k1Dob: dobFromAge(8), k2Dob: dobFromAge(3), retAge: 44, horizonAge: 90, growToRet: false, ledgerFromToday: true, planStartYear: now.getFullYear() };
 let seq = Date.now() % 1e6;
 const nid = (p) => `${p}${(seq++).toString(36)}`;
 const gk = (t, g) => `${t}|${g}`;
@@ -76,6 +76,11 @@ export default function RetirementPage() {
   const [items, setItems] = useState([]);
   const [assets, setAssets] = useState([]);
   const [inflows, setInflows] = useState([]);
+  const [actuals, setActuals] = useState([]);
+  const [actualCorpus, setActualCorpus] = useState({});
+  const [ySel, setYSel] = useState(now.getFullYear());
+  const [yTier, setYTier] = useState("all");
+  const [yGroup, setYGroup] = useState("all");
   const [open, setOpen] = useState({});
   const [fTier, setFTier] = useState("all");
   const [fGroup, setFGroup] = useState("all");
@@ -85,7 +90,7 @@ export default function RetirementPage() {
   useEffect(() => {
     (async () => {
       try {
-        const [cfg, ex, it, as] = await Promise.all([TAB.cfg, TAB.exp, TAB.itm, TAB.ast].map(getTable));
+        const [cfg, ex, it, as, ac] = await Promise.all([TAB.cfg, TAB.exp, TAB.itm, TAB.ast, TAB.act].map(getTable));
         const c = {};
         cfg.forEach((r) => { try { c[r.id] = JSON.parse(r.valueJSON); } catch (e) {} });
         const fam = { ...DEF_FAMILY, ...(c.family || {}) };
@@ -98,7 +103,8 @@ export default function RetirementPage() {
           setAssets(as.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), allocated: parseAmount(r.allocated), roi: parseAmount(r.roi), startYear: parseAmount(r.startYear), startMonth: parseAmount(r.startMonth) || 1, targets: String(r.targets || "").split(",").filter(Boolean) })));
         }
         I2.forEach((x) => { if (!G.some((g) => g.tier === x.tier && g.name === x.group)) G.push({ tier: x.tier, name: x.group }); });
-        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setInflows(c.inflows || []);
+        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setInflows(c.inflows || []); setActualCorpus(c.actualCorpus || {});
+        setActuals(ac.filter((x) => x.itemId).map((x) => ({ id: String(x.id), itemId: String(x.itemId), year: parseAmount(x.year), amount: parseAmount(x.amount) })));
         setLoaded(true); setStatus("Loaded from Google Sheet");
       } catch (e) { setStatus("⚠ Could not load: " + e.message); }
     })();
@@ -108,8 +114,8 @@ export default function RetirementPage() {
     if (!loaded) return;
     const t = setTimeout(async () => {
       const tables = {
-        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "inflows"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, inflows][i]) })),
-        [TAB.exp]: [], [TAB.itm]: items, [TAB.ast]: assets.map((a) => ({ ...a, targets: a.targets.join(",") })),
+        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "inflows", "actualCorpus"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, inflows, actualCorpus][i]) })),
+        [TAB.exp]: [], [TAB.act]: actuals, [TAB.itm]: items, [TAB.ast]: assets.map((a) => ({ ...a, targets: a.targets.join(",") })),
       };
       try {
         setStatus("Saving…");
@@ -123,7 +129,7 @@ export default function RetirementPage() {
       } catch (e) { setStatus("⚠ Save failed: " + e.message); }
     }, 1500);
     return () => clearTimeout(t);
-  }, [loaded, family, infl, tiers, groups, items, assets, inflows]);
+  }, [loaded, family, infl, tiers, groups, items, assets, inflows, actuals, actualCorpus]);
 
   const ages = { f: ageOf(family.fDob), m: ageOf(family.mDob), k1: ageOf(family.k1Dob), k2: ageOf(family.k2Dob) };
   const people = [["f", family.fName], ["m", family.mName], ["k1", family.k1Name], ["k2", family.k2Name]];
@@ -131,18 +137,27 @@ export default function RetirementPage() {
   const totalL = assets.reduce((s, a) => s + a.allocated, 0);
   const wroi = totalL ? assets.reduce((s, a) => s + a.allocated * a.roi, 0) / totalL : 0;
   const curY = now.getFullYear();
-  const fo = (family.ledgerFromToday ? ages.f : Math.max(+family.retAge || ages.f, ages.f)) - ages.f; // years from today to first ledger row
-  const yoOf = (y) => (y > 0 ? Math.max(0, y - curY) : 0);
+  const psY = family.planStartYear || curY;
+  const base = ages.f - Math.max(0, curY - psY); // father's age in the plan's first year
+  const fo = (family.ledgerFromToday ? base : Math.max(+family.retAge || ages.f, ages.f)) - base;
+  const yoOf = (y) => (y > 0 ? Math.max(0, y - psY) : 0);
+  const actMap = useMemo(() => { const m = {}; actuals.forEach((a) => (m[`${a.itemId}|${a.year}`] = a.amount)); return m; }, [actuals]);
+  const plannedOf = (x, f) => {
+    if (!x.active) return 0;
+    const max = +family.horizonAge || 90, ret = +family.retAge || ages.f, sh = ages.f - (ages[x.anchor || "f"] || 0);
+    const s0 = x.startAtRet ? ret : x.startAge + sh, e0 = x.endAtHorizon ? max : x.endAge + sh, ev = Math.max(1, x.every || 1);
+    if (!(x.isRecurring ? f >= s0 && f <= e0 && (f - s0) % ev === 0 : f === s0)) return 0;
+    return annual(x) * Math.pow(1 + (infl[x.infType] || 0) / 100, f - base);
+  };
   const grow = (roi, yo) => (family.ledgerFromToday || !family.growToRet ? 1 : Math.pow(1 + roi / 100, Math.max(0, fo - yo)));
   const tierKeys = Object.keys(tiers);
 
   const calc = useMemo(() => {
-    const cur = ages.f, max = +family.horizonAge || 90, rd = wroi / 100;
-    const first = cur + fo;
-    let cap = 0;
+    const max = +family.horizonAge || 90, rd = wroi / 100, first = base + fo;
+    let cap = 0, capP = 0;
     const joins = {};
     const place = (amt, yo, month, roi, isAsset, dated) => {
-      if (yo < fo) cap += amt * (isAsset ? grow(roi, yo) : 1);
+      if (yo < fo) { const v = amt * (isAsset ? grow(roi, yo) : 1); cap += v; capP += v; }
       else (joins[yo] = joins[yo] || []).push({ amt, frac: dated ? (13 - (month || 1)) / 12 : 1 });
     };
     assets.forEach((a) => place(a.allocated * 1e5, yoOf(a.startYear), a.startMonth, a.roi, true, a.startYear > 0));
@@ -153,25 +168,26 @@ export default function RetirementPage() {
     };
     const rows = [], tierNpv = {}, gNpv = {}, gTot = {};
     tierKeys.forEach((k) => (tierNpv[k] = 0));
-    let idx = 0;
-    for (let f = first; f <= max; f++, idx++) {
-      const off = f - cur, out = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
+    for (let f = first, idx = 0; f <= max; f++, idx++) {
+      const off = f - base, yr = psY + off, out = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
+      let plan = 0;
       tierKeys.forEach((k) => (out[k] = 0));
       items.forEach((x) => {
-        if (!x.active || out[x.tier] === undefined) return;
-        const sh = cur - (ages[x.anchor || "f"] || 0);
-        const s = x.startAtRet ? (+family.retAge || cur) : x.startAge + sh, e = x.endAtHorizon ? max : x.endAge + sh, ev = Math.max(1, x.every || 1);
-        if (!(x.isRecurring ? f >= s && f <= e && (f - s) % ev === 0 : f === s)) return;
-        const v = annual(x) * Math.pow(1 + (infl[x.infType] || 0) / 100, off), key = gk(x.tier, x.group);
+        if (out[x.tier] === undefined) return;
+        const pv = plannedOf(x, f), a = actMap[`${x.id}|${yr}`], v = a !== undefined ? a : pv, key = gk(x.tier, x.group);
+        plan += pv;
+        if (!v) return;
         out[x.tier] += v; tierNpv[x.tier] += v / disc; gNpv[key] = (gNpv[key] || 0) + v / disc; gTot[key] = (gTot[key] || 0) + v;
       });
-      const total = Object.values(out).reduce((a, b) => a + b, 0), addSum = adds.reduce((t, a) => t + a.amt, 0), after = cap + addSum - total;
-      const end = after > 0 ? after * (1 + r) - adds.reduce((t, a) => t + a.amt * ((1 + r) - Math.pow(1 + r, a.frac)), 0) : after;
-      rows.push({ f, m: ages.m + off, k1: ages.k1 + off, k2: ages.k2 + off, start: cap, added: addSum, out, total, end });
-      cap = end;
+      const total = Object.values(out).reduce((a, b) => a + b, 0), addSum = adds.reduce((t, a) => t + a.amt, 0);
+      const growAdj = adds.reduce((t, a) => t + a.amt * ((1 + r) - Math.pow(1 + r, a.frac)), 0);
+      const fin = (c, t) => { const after = c + addSum - t; return after > 0 ? after * (1 + r) - growAdj : after; };
+      const end = fin(cap, total), endP = fin(capP, plan);
+      rows.push({ f, year: yr, m: ages.m + (f - ages.f), k1: ages.k1 + (f - ages.f), k2: ages.k2 + (f - ages.f), start: cap, added: addSum, out, total, plan, end, endP });
+      cap = end; capP = endP;
     }
     return { rows, tierNpv, gNpv, gTot };
-  }, [family, assets, inflows, items, infl, tiers, wroi]);
+  }, [family, assets, inflows, items, infl, tiers, wroi, actMap]);
 
   const alloc = useMemo(() => {
     const m = {}; tierKeys.forEach((k) => (m[k] = 0));
@@ -181,6 +197,52 @@ export default function RetirementPage() {
     inflows.forEach((x) => spread((x.amount || 0) * 1e5 * dc(yoOf(x.year)), x.targets || []));
     return m;
   }, [assets, inflows, tiers, family, wroi]);
+
+  const alerts = useMemo(() => {
+    const m = {};
+    calc.rows.forEach((row) => {
+      if (row.year < curY || row.year > curY + 2) return;
+      items.forEach((x) => {
+        if (x.isRecurring && (x.every || 1) <= 1) return;
+        const pv = plannedOf(x, row.f); if (pv <= 0) return;
+        const k = `${x.parentLine || x.name}|${row.year}`; m[k] = (m[k] || 0) + pv;
+      });
+    });
+    return Object.entries(m).filter(([, v]) => v >= 2e5).map(([k, v]) => { const [n, y] = k.split("|"); return { n, y: +y, v }; }).sort((a, b) => a.y - b.y || b.v - a.v);
+  }, [calc, items]);
+
+  const insights = useMemo(() => {
+    const good = [], warn = [], info = [], rows = calc.rows, last = rows[rows.length - 1];
+    tierKeys.forEach((k) => {
+      const need = calc.tierNpv[k] || 0, have = alloc[k] || 0;
+      if (need > 0 && have < need) warn.push({ t: `${k}: underfunded by ${fmtI(need - have)}`, d: `Assigned capital covers ${Math.round((have / need) * 100)}% of what ${k} needs. Point more assets or corpus additions at ${k}, push some costs later, or trim its largest group.` });
+      else if (need > 0) good.push({ t: `${k}: fully funded`, d: `${fmtI(need)} needed, ${fmtI(have - need)} to spare.` });
+    });
+    const dry = rows.find((x) => x.end < 0);
+    if (dry) warn.push({ t: `Corpus runs out in ${dry.year} (age ${dry.f})`, d: "Options: delay retirement, add corpus amounts, raise savings, cut Lifestyle costs, or move big goals later." });
+    else if (last) good.push({ t: `Corpus lasts beyond age ${last.f}`, d: `Projected balance at the end: ${fmtI(last.end)}.` });
+    const real = wroi - (infl.core || 0);
+    if (totalL && real < 2) warn.push({ t: `Real return is only ${real.toFixed(1)}%`, d: `Yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%. Review asset mix or inflation assumptions.` });
+    else if (totalL) good.push({ t: `Real return ${real.toFixed(1)}% above inflation`, d: `Portfolio yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%.` });
+    const unalloc = assets.filter((a) => !a.targets.length);
+    if (unalloc.length) warn.push({ t: `${unalloc.length} asset(s) fund no tier`, d: `${unalloc.map((a) => a.name).join(", ")} count in the runway but not in tier funding. Tick the tiers they fund.` });
+    const big = assets.find((a) => totalL && a.allocated / totalL > 0.5);
+    if (big) info.push({ t: `${big.name} is ${Math.round((big.allocated / totalL) * 100)}% of capital`, d: "Heavy concentration in one asset; consider spreading risk." });
+    const gs = Object.entries(calc.gNpv).sort((a, b) => b[1] - a[1]), tot = gs.reduce((t, g) => t + g[1], 0);
+    if (gs.length && tot) info.push({ t: `Biggest need: ${gs[0][0].split("|")[1]} (${Math.round((gs[0][1] / tot) * 100)}% of total)`, d: `Next: ${gs.slice(1, 3).map((g) => g[0].split("|")[1]).join(", ")}. Trimming here moves the plan most.` });
+    const past = rows.filter((x) => x.year <= curY && actuals.some((a) => a.year === x.year));
+    if (past.length) {
+      const v = past.reduce((t, x) => t + (x.plan - x.total), 0), od = {};
+      actuals.filter((a) => a.year <= curY).forEach((a) => { const x = items.find((i) => i.id === a.itemId); if (!x) return; const k = x.group; od[k] = (od[k] || 0) + a.amount - plannedOf(x, base + (a.year - psY)); });
+      const worst = Object.entries(od).sort((a, b) => b[1] - a[1])[0];
+      if (v >= 0) good.push({ t: `Spending under plan by ${fmtI(v)} so far`, d: "Surplus is already reflected in the runway." });
+      else warn.push({ t: `Overspent plan by ${fmtI(-v)} so far`, d: worst && worst[1] > 0 ? `Largest overspend: ${worst[0]} (${fmtI(worst[1])}). Adjust that budget or the plan.` : "Review the Year Review tab." });
+    }
+    const ky = Object.keys(actualCorpus).map(Number).filter((y) => rows.some((x) => x.year === y)).sort().pop();
+    if (ky) { const gap = actualCorpus[ky] - rows.find((x) => x.year === ky).endP; (gap >= 0 ? good : warn).push({ t: `Savings ${gap >= 0 ? "ahead of" : "behind"} target by ${fmtI(Math.abs(gap))} (${ky})`, d: gap >= 0 ? "Keep the current pace." : "Add a corpus amount or raise monthly investing to catch up." }); }
+    if (alerts.length) info.push({ t: `${alerts.length} big cost(s) due within 2 years`, d: alerts.slice(0, 3).map((a) => `${a.n} ${fmtI(a.v)} (${a.y})`).join("; ") + ". Keep this money liquid." });
+    return { good, warn, info };
+  }, [calc, alloc, assets, actuals, actualCorpus, alerts, items, infl, wroi]);
 
   const upd = (id, patch) => setItems((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const updA = (id, patch) => setAssets((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -219,7 +281,7 @@ export default function RetirementPage() {
   const addInfl = () => { const k = (prompt("Name for the new inflation track:") || "").trim(); if (k && infl[k] === undefined) setInfl((i) => ({ ...i, [k]: 7 })); };
   const delInfl = (k) => { setInfl((i) => { const n = { ...i }; delete n[k]; return n; }); setItems((l) => l.map((x) => (x.infType === k ? { ...x, infType: "core" } : x))); };
 
-  const tabs = [["setup", "Family & Inflation"], ["items", "Itemized Costs"], ["tiers", "Tier Summary"], ["assets", "Capital Portfolios"], ["ledger", "Cash Runway"]];
+  const tabs = [["setup", "Family & Inflation"], ["items", "Itemized Costs"], ["tiers", "Tier Summary"], ["assets", "Capital Portfolios"], ["yearly", "Yearly Expenses"], ["review", "Year Review"], ["tips", "Suggestions"], ["ledger", "Cash Runway"]];
   const inflOpts = Object.keys(infl).map((k) => [k, k]);
   const shown = items.filter((x) => (fTier === "all" || x.tier === fTier) && (fGroup === "all" || x.group === fGroup) && (!q || `${x.name} ${x.parentLine} ${x.group}`.toLowerCase().includes(q.toLowerCase())))
     .sort((a, b) => tierKeys.indexOf(a.tier) - tierKeys.indexOf(b.tier) || a.group.localeCompare(b.group));
@@ -246,6 +308,11 @@ export default function RetirementPage() {
         })}
       </div>
 
+      {alerts.length > 0 && (
+        <div style={{ background: "#FBF3E3", border: `1px solid ${COLORS.gold}`, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
+          {alerts.map((a, i) => <div key={i}>⚠ <b>{a.n}</b> — {fmtI(a.v)} due {a.y === curY ? "this year" : `in ${a.y} (${a.y - curY} yr)`}</div>)}
+        </div>
+      )}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 14 }}>
         {tabs.map(([k, n]) => <button key={k} onClick={() => setTab(k)} style={tab === k ? btnStyle : btnStyleGhost}>{n}</button>)}
       </div>
@@ -265,6 +332,7 @@ export default function RetirementPage() {
               ))}
               <div><div style={{ fontSize: 11, color: COLORS.muted }}>{family.fName}'s retirement age</div><I w="100%" v={family.retAge} on={setF("retAge")} /></div>
               <div><div style={{ fontSize: 11, color: COLORS.muted }}>Horizon age</div><I w="100%" v={family.horizonAge} on={setF("horizonAge")} /></div>
+              <div><div style={{ fontSize: 11, color: COLORS.muted }}>Plan start year</div><I w="100%" v={family.planStartYear} on={setF("planStartYear")} /></div>
             </div>
           </Card>
           <Card>
@@ -412,17 +480,103 @@ export default function RetirementPage() {
         </Card>
       )}
 
+      {tab === "yearly" && (() => {
+        const yrs = [...new Set(calc.rows.map((x) => x.year))], yy = yrs.includes(ySel) ? ySel : yrs[0];
+        const f = base + (yy - psY), row = calc.rows.find((x) => x.year === yy);
+        const setActual = (itemId, val) => setActuals((l) => { const id = `${itemId}_${yy}`, rest = l.filter((x) => x.id !== id); return val === "" ? rest : [...rest, { id, itemId, year: yy, amount: +val }]; });
+        const list = items.filter((x) => (yTier === "all" || x.tier === yTier) && (yGroup === "all" || x.group === yGroup)).map((x) => ({ x, pv: plannedOf(x, f), a: actMap[`${x.id}|${yy}`] })).filter((o) => o.pv > 0 || o.a !== undefined);
+        const secs = {}; list.forEach((o) => { const k = gk(o.x.tier, o.x.group); (secs[k] = secs[k] || []).push(o); });
+        const keys = Object.keys(secs).sort((a, b) => tierKeys.indexOf(a.split("|")[0]) - tierKeys.indexOf(b.split("|")[0]) || a.localeCompare(b));
+        const eff = (o) => (o.a !== undefined ? o.a : o.pv), vc = (v) => (v >= 0 ? COLORS.positive : COLORS.negative);
+        return (
+          <>
+            <Card>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <S v={yy} opts={yrs.map((y) => [y, `${y} (age ${base + (y - psY)})`])} on={(v) => setYSel(+v)} />
+                <S v={yTier} opts={[["all", "All tiers"], ...tierKeys.map((k) => [k, k])]} on={(v) => { setYTier(v); setYGroup("all"); }} />
+                <S v={yGroup} opts={[["all", "All groups"], ...(yTier === "all" ? [...new Set(groups.map((g) => g.name))] : groupsOf(yTier)).map((g) => [g, g])]} on={setYGroup} w={220} />
+              </div>
+              {row && <div style={{ fontSize: 13 }}>Planned <b>{fmtI(row.plan)}</b> · With actuals <b>{fmtI(row.total)}</b> · <b style={{ color: vc(row.plan - row.total) }}>{row.plan - row.total >= 0 ? "Surplus" : "Deficit"} {fmtI(Math.abs(row.plan - row.total))}</b> <span style={{ color: COLORS.muted, fontSize: 11 }}>(actuals you enter replace the plan in Cash Runway)</span></div>}
+            </Card>
+            <Card style={{ overflowX: "auto", padding: 0 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                <thead><tr>{["Item", "Planned", "Actual ₹ (this year)", "Surplus / Deficit"].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {keys.map((k) => {
+                    const os = secs[k], P = os.reduce((t, o) => t + o.pv, 0), E = os.reduce((t, o) => t + eff(o), 0);
+                    return (
+                      <React.Fragment key={k}>
+                        <tr style={{ background: COLORS.lineLight }}><td style={{ ...cell, fontWeight: 700 }}>{k.replace("|", " › ")}</td><td style={cell}><b>{fmtI(P)}</b></td><td style={cell}><b>{fmtI(E)}</b></td><td style={{ ...cell, color: vc(P - E) }}><b>{fmtI(P - E)}</b></td></tr>
+                        {os.map((o) => (
+                          <tr key={o.x.id}>
+                            <td style={{ ...cell, paddingLeft: 18 }}>{o.x.name}</td>
+                            <td style={cell}>{fmtI(o.pv)}</td>
+                            <td style={cell}><I w={110} v={o.a ?? ""} on={(v) => setActual(o.x.id, v === 0 && o.a === undefined ? "" : v)} placeholder="not entered" /> <Del on={() => setActual(o.x.id, String(Math.round(o.pv)))}>use plan</Del>{o.a !== undefined && <> · <Del on={() => setActual(o.x.id, "")}>clear</Del></>}</td>
+                            <td style={{ ...cell, color: o.a !== undefined ? vc(o.pv - o.a) : COLORS.muted }}>{o.a !== undefined ? fmtI(o.pv - o.a) : "–"}</td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                  {!keys.length && <tr><td colSpan={4} style={{ ...cell, color: COLORS.muted }}>No planned costs in {yy} for this filter.</td></tr>}
+                </tbody>
+              </table>
+            </Card>
+          </>
+        );
+      })()}
+
+      {tab === "review" && (() => {
+        const past = calc.rows.filter((x) => x.year <= curY);
+        let cum = 0;
+        return (
+          <Card style={{ overflowX: "auto", padding: 0 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+              <thead><tr>{["Year", "Planned spend", "Spend with actuals", "Surplus / Deficit", "Cumulative", "Target corpus (plan)", "Actual corpus (Lakhs)", "Ahead / Behind"].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+              <tbody>
+                {past.map((x) => {
+                  const v = x.plan - x.total; cum += v;
+                  const ac = actualCorpus[x.year], gap = ac !== undefined ? ac - x.endP : null;
+                  return (
+                    <tr key={x.year}>
+                      <td style={cell}><b>{x.year}</b></td><td style={cell}>{fmtI(x.plan)}</td><td style={cell}>{fmtI(x.total)}</td>
+                      <td style={{ ...cell, color: v >= 0 ? COLORS.positive : COLORS.negative }}>{fmtI(v)}</td>
+                      <td style={{ ...cell, color: cum >= 0 ? COLORS.positive : COLORS.negative }}>{fmtI(cum)}</td>
+                      <td style={cell}>{fmtI(x.endP)}</td>
+                      <td style={cell}><I w={100} v={ac !== undefined ? ac / 1e5 : ""} placeholder="not entered" on={(val) => setActualCorpus((m) => { const n = { ...m }; if (!val) delete n[x.year]; else n[x.year] = val * 1e5; return n; })} /></td>
+                      <td style={{ ...cell, color: gap === null ? COLORS.muted : gap >= 0 ? COLORS.positive : COLORS.negative }}>{gap === null ? "–" : `${gap >= 0 ? "+" : ""}${fmtI(gap)}`}</td>
+                    </tr>
+                  );
+                })}
+                {!past.length && <tr><td colSpan={8} style={{ ...cell, color: COLORS.muted }}>No past years yet — the plan starts in {psY}. You can change "Plan start year" in Family & Inflation.</td></tr>}
+              </tbody>
+            </table>
+          </Card>
+        );
+      })()}
+
+      {tab === "tips" && (
+        <>
+          {[["warn", "Needs attention", COLORS.negative], ["good", "Going well", COLORS.positive], ["info", "Good to know", COLORS.info]].map(([k, title, col]) => insights[k].length > 0 && (
+            <Card key={k}>
+              <b style={{ fontSize: 13, color: col }}>{title}</b>
+              {insights[k].map((i, n) => <div key={n} style={{ marginTop: 8, fontSize: 12 }}><b>{i.t}</b><div style={{ color: COLORS.muted }}>{i.d}</div></div>)}
+            </Card>
+          ))}
+        </>
+      )}
+
       {tab === "ledger" && (
         <Card style={{ overflowX: "auto", padding: 0 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead><tr>
-              {[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
+              <th style={head}>Year</th>{[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
               <th style={head}>Start balance</th><th style={head}>Added</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
             </tr></thead>
             <tbody>
               {calc.rows.map((r) => (
                 <tr key={r.f}>
-                  <td style={cell}><b>{r.f}</b></td><td style={cell}>{r.m}</td><td style={cell}>{r.k1}</td><td style={cell}>{r.k2}</td>
+                  <td style={cell}>{r.year}</td><td style={cell}><b>{r.f}</b></td><td style={cell}>{r.m}</td><td style={cell}>{r.k1}</td><td style={cell}>{r.k2}</td>
                   <td style={cell}>{fmtI(r.start)}</td><td style={cell}>{r.added ? fmtI(r.added) : "–"}</td>{tierKeys.map((k) => <td key={k} style={cell}>{fmtI(r.out[k] || 0)}</td>)}
                   <td style={{ ...cell, color: COLORS.negative }}>{fmtI(r.total)}</td><td style={{ ...cell, fontWeight: 700, color: r.end < 0 ? COLORS.negative : COLORS.positive }}>{fmtI(r.end)}</td>
                 </tr>
