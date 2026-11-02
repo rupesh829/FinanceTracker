@@ -75,6 +75,7 @@ export default function RetirementPage() {
   const [groups, setGroups] = useState([]);
   const [items, setItems] = useState([]);
   const [assets, setAssets] = useState([]);
+  const [inflows, setInflows] = useState([]);
   const [open, setOpen] = useState({});
   const [fTier, setFTier] = useState("all");
   const [fGroup, setFGroup] = useState("all");
@@ -94,10 +95,10 @@ export default function RetirementPage() {
           const s = seedInto([], [], fam, tr, inf); I2 = s.it; G = s.gr; setAssets(BASE_ASSETS);
         } else {
           I2 = it.filter((r) => r.id && r.tier).length ? it.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), value: parseAmount(r.value), startAge: parseAmount(r.startAge), endAge: parseAmount(r.endAge), every: parseAmount(r.every) || 1, isRecurring: bool(r.isRecurring), startAtRet: bool(r.startAtRet), endAtHorizon: bool(r.endAtHorizon), active: r.active === "" ? true : bool(r.active), anchor: r.anchor || "f", group: String(r.group || ""), parentLine: String(r.parentLine || "") })) : migrate(ex.filter((r) => r.id), it.filter((r) => r.id), fam);
-          setAssets(as.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), allocated: parseAmount(r.allocated), roi: parseAmount(r.roi), targets: String(r.targets || "").split(",").filter(Boolean) })));
+          setAssets(as.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), allocated: parseAmount(r.allocated), roi: parseAmount(r.roi), startYear: parseAmount(r.startYear), startMonth: parseAmount(r.startMonth) || 1, targets: String(r.targets || "").split(",").filter(Boolean) })));
         }
         I2.forEach((x) => { if (!G.some((g) => g.tier === x.tier && g.name === x.group)) G.push({ tier: x.tier, name: x.group }); });
-        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2);
+        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setInflows(c.inflows || []);
         setLoaded(true); setStatus("Loaded from Google Sheet");
       } catch (e) { setStatus("⚠ Could not load: " + e.message); }
     })();
@@ -107,7 +108,7 @@ export default function RetirementPage() {
     if (!loaded) return;
     const t = setTimeout(async () => {
       const tables = {
-        [TAB.cfg]: ["family", "inflation", "tiers", "groups"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups][i]) })),
+        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "inflows"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, inflows][i]) })),
         [TAB.exp]: [], [TAB.itm]: items, [TAB.ast]: assets.map((a) => ({ ...a, targets: a.targets.join(",") })),
       };
       try {
@@ -122,45 +123,64 @@ export default function RetirementPage() {
       } catch (e) { setStatus("⚠ Save failed: " + e.message); }
     }, 1500);
     return () => clearTimeout(t);
-  }, [loaded, family, infl, tiers, groups, items, assets]);
+  }, [loaded, family, infl, tiers, groups, items, assets, inflows]);
 
   const ages = { f: ageOf(family.fDob), m: ageOf(family.mDob), k1: ageOf(family.k1Dob), k2: ageOf(family.k2Dob) };
   const people = [["f", family.fName], ["m", family.mName], ["k1", family.k1Name], ["k2", family.k2Name]];
   const annual = (x) => (x.unit === "/ month" ? x.value * 12 : x.value);
   const totalL = assets.reduce((s, a) => s + a.allocated, 0);
   const wroi = totalL ? assets.reduce((s, a) => s + a.allocated * a.roi, 0) / totalL : 0;
-  const pre = (roi) => (family.ledgerFromToday || !family.growToRet ? 1 : Math.pow(1 + roi / 100, Math.max(0, family.retAge - ages.f)));
+  const curY = now.getFullYear();
+  const fo = (family.ledgerFromToday ? ages.f : Math.max(+family.retAge || ages.f, ages.f)) - ages.f; // years from today to first ledger row
+  const yoOf = (y) => (y > 0 ? Math.max(0, y - curY) : 0);
+  const grow = (roi, yo) => (family.ledgerFromToday || !family.growToRet ? 1 : Math.pow(1 + roi / 100, Math.max(0, fo - yo)));
   const tierKeys = Object.keys(tiers);
 
   const calc = useMemo(() => {
-    const cur = ages.f, ret = +family.retAge || cur, max = +family.horizonAge || 90, r = wroi / 100;
-    let cap = assets.reduce((s, a) => s + a.allocated * 1e5 * pre(a.roi), 0);
+    const cur = ages.f, max = +family.horizonAge || 90, rd = wroi / 100;
+    const first = cur + fo;
+    let cap = 0;
+    const joins = {};
+    const place = (amt, yo, month, roi, isAsset, dated) => {
+      if (yo < fo) cap += amt * (isAsset ? grow(roi, yo) : 1);
+      else (joins[yo] = joins[yo] || []).push({ amt, frac: dated ? (13 - (month || 1)) / 12 : 1 });
+    };
+    assets.forEach((a) => place(a.allocated * 1e5, yoOf(a.startYear), a.startMonth, a.roi, true, a.startYear > 0));
+    inflows.forEach((x) => place((x.amount || 0) * 1e5, yoOf(x.year), x.month, 0, false, true));
+    const rateAt = (ro) => {
+      const act = assets.filter((a) => yoOf(a.startYear) <= ro), L = act.reduce((t, a) => t + a.allocated, 0);
+      return L ? act.reduce((t, a) => t + a.allocated * a.roi, 0) / L / 100 : rd;
+    };
     const rows = [], tierNpv = {}, gNpv = {}, gTot = {};
     tierKeys.forEach((k) => (tierNpv[k] = 0));
     let idx = 0;
-    for (let f = family.ledgerFromToday ? cur : Math.max(ret, cur); f <= max; f++, idx++) {
-      const off = f - cur, out = {}, disc = Math.pow(1 + r, idx);
+    for (let f = first; f <= max; f++, idx++) {
+      const off = f - cur, out = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
       tierKeys.forEach((k) => (out[k] = 0));
       items.forEach((x) => {
         if (!x.active || out[x.tier] === undefined) return;
         const sh = cur - (ages[x.anchor || "f"] || 0);
-        const s = x.startAtRet ? ret : x.startAge + sh, e = x.endAtHorizon ? max : x.endAge + sh, ev = Math.max(1, x.every || 1);
+        const s = x.startAtRet ? (+family.retAge || cur) : x.startAge + sh, e = x.endAtHorizon ? max : x.endAge + sh, ev = Math.max(1, x.every || 1);
         if (!(x.isRecurring ? f >= s && f <= e && (f - s) % ev === 0 : f === s)) return;
         const v = annual(x) * Math.pow(1 + (infl[x.infType] || 0) / 100, off), key = gk(x.tier, x.group);
         out[x.tier] += v; tierNpv[x.tier] += v / disc; gNpv[key] = (gNpv[key] || 0) + v / disc; gTot[key] = (gTot[key] || 0) + v;
       });
-      const total = Object.values(out).reduce((a, b) => a + b, 0), after = cap - total, end = after > 0 ? after * (1 + r) : after;
-      rows.push({ f, m: ages.m + off, k1: ages.k1 + off, k2: ages.k2 + off, start: cap, out, total, end });
+      const total = Object.values(out).reduce((a, b) => a + b, 0), addSum = adds.reduce((t, a) => t + a.amt, 0), after = cap + addSum - total;
+      const end = after > 0 ? after * (1 + r) - adds.reduce((t, a) => t + a.amt * ((1 + r) - Math.pow(1 + r, a.frac)), 0) : after;
+      rows.push({ f, m: ages.m + off, k1: ages.k1 + off, k2: ages.k2 + off, start: cap, added: addSum, out, total, end });
       cap = end;
     }
     return { rows, tierNpv, gNpv, gTot };
-  }, [family, assets, items, infl, tiers, wroi]);
+  }, [family, assets, inflows, items, infl, tiers, wroi]);
 
   const alloc = useMemo(() => {
     const m = {}; tierKeys.forEach((k) => (m[k] = 0));
-    assets.forEach((a) => a.targets.forEach((k) => { if (m[k] !== undefined) m[k] += (a.allocated * 1e5 * pre(a.roi)) / a.targets.length; }));
+    const dc = (yo) => 1 / Math.pow(1 + wroi / 100, Math.max(0, yo - fo));
+    const spread = (v, targets) => targets.forEach((k) => { if (m[k] !== undefined) m[k] += v / targets.length; });
+    assets.forEach((a) => { const yo = yoOf(a.startYear); spread(a.allocated * 1e5 * (yo < fo ? grow(a.roi, yo) : dc(yo)), a.targets); });
+    inflows.forEach((x) => spread((x.amount || 0) * 1e5 * dc(yoOf(x.year)), x.targets || []));
     return m;
-  }, [assets, tiers, family]);
+  }, [assets, inflows, tiers, family, wroi]);
 
   const upd = (id, patch) => setItems((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const updA = (id, patch) => setAssets((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -351,19 +371,42 @@ export default function RetirementPage() {
         <Card style={{ overflowX: "auto" }}>
           <Chk v={family.ledgerFromToday} on={setF("ledgerFromToday")} label="Corpus funds all dated expenses from today (ledger starts today)" />
           <Chk v={family.growToRet} on={setF("growToRet")} label="Capital keeps compounding until retirement (only when the ledger starts at retirement)" />
-          <div style={{ margin: "8px 0" }}><button style={btnStyle} onClick={() => setAssets((l) => [...l, { id: nid("a"), name: "New asset", allocated: 50, roi: 8.5, targets: [] }])}>+ Add asset</button></div>
+          <div style={{ margin: "8px 0" }}><button style={btnStyle} onClick={() => setAssets((l) => [...l, { id: nid("a"), name: "New asset", allocated: 50, roi: 8.5, startYear: 0, startMonth: 1, targets: [] }])}>+ Add asset</button></div>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead><tr>{["Asset", "Principal (Lakhs)", "Growth %", "Funds which tiers", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Asset", "Principal (Lakhs)", "Growth %", "Available from", "Funds which tiers", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
             <tbody>
               {assets.map((a) => (
                 <tr key={a.id}>
                   <td style={cell}><I t="text" w="100%" v={a.name} on={(v) => updA(a.id, { name: v })} /></td>
                   <td style={cell}><I w={90} v={a.allocated} on={(v) => updA(a.id, { allocated: v })} /><div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI(a.allocated * 1e5)}</div></td>
                   <td style={cell}><I w={60} v={a.roi} on={(v) => updA(a.id, { roi: v })} step="0.1" /></td>
+                  <td style={cell}><I t="month" w={140} v={a.startYear ? `${a.startYear}-${String(a.startMonth || 1).padStart(2, "0")}` : ""} on={(v) => { const m = /^(\d{4})-(\d{2})/.exec(v); updA(a.id, m ? { startYear: +m[1], startMonth: +m[2] } : { startYear: 0, startMonth: 1 }); }} /><div style={{ fontSize: 10, color: COLORS.muted }}>{a.startYear ? "compounds from this month" : "blank = available today"}</div></td>
                   <td style={cell}>{tierKeys.map((k) => <Chk key={k} v={a.targets.includes(k)} label={k} on={(c) => updA(a.id, { targets: c ? [...a.targets, k] : a.targets.filter((x) => x !== k) })} />)}</td>
                   <td style={cell}><Del on={() => setAssets((l) => l.filter((x) => x.id !== a.id))} /></td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+          <div style={{ margin: "22px 0 8px", display: "flex", gap: 10, alignItems: "center" }}>
+            <b style={{ fontSize: 13 }}>One-time corpus additions</b>
+            <button style={btnStyle} onClick={() => setInflows((l) => [...l, { id: nid("c"), name: "New addition", amount: 10, year: curY + 1, month: 1, targets: [] }])}>+ Add corpus amount</button>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead><tr>{["Source", "Amount (Lakhs)", "Received in", "Funds which tiers", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+            <tbody>
+              {inflows.map((x) => {
+                const up = (patch) => setInflows((l) => l.map((y) => (y.id === x.id ? { ...y, ...patch } : y)));
+                return (
+                  <tr key={x.id}>
+                    <td style={cell}><I t="text" w="100%" v={x.name} on={(v) => up({ name: v })} /></td>
+                    <td style={cell}><I w={90} v={x.amount} on={(v) => up({ amount: v })} /><div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI((x.amount || 0) * 1e5)}</div></td>
+                    <td style={cell}><I t="month" w={140} v={`${x.year}-${String(x.month || 1).padStart(2, "0")}`} on={(v) => { const m = /^(\d{4})-(\d{2})/.exec(v); if (m) up({ year: +m[1], month: +m[2] }); }} /></td>
+                    <td style={cell}>{tierKeys.map((k) => <Chk key={k} v={(x.targets || []).includes(k)} label={k} on={(c) => up({ targets: c ? [...(x.targets || []), k] : (x.targets || []).filter((t) => t !== k) })} />)}</td>
+                    <td style={cell}><Del on={() => setInflows((l) => l.filter((y) => y.id !== x.id))} /></td>
+                  </tr>
+                );
+              })}
+              {!inflows.length && <tr><td colSpan={5} style={{ ...cell, color: COLORS.muted }}>None. Use this for bonuses, a property sale, maturities, inheritance, etc.</td></tr>}
             </tbody>
           </table>
         </Card>
@@ -374,13 +417,13 @@ export default function RetirementPage() {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead><tr>
               {[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
-              <th style={head}>Start balance</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
+              <th style={head}>Start balance</th><th style={head}>Added</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
             </tr></thead>
             <tbody>
               {calc.rows.map((r) => (
                 <tr key={r.f}>
                   <td style={cell}><b>{r.f}</b></td><td style={cell}>{r.m}</td><td style={cell}>{r.k1}</td><td style={cell}>{r.k2}</td>
-                  <td style={cell}>{fmtI(r.start)}</td>{tierKeys.map((k) => <td key={k} style={cell}>{fmtI(r.out[k] || 0)}</td>)}
+                  <td style={cell}>{fmtI(r.start)}</td><td style={cell}>{r.added ? fmtI(r.added) : "–"}</td>{tierKeys.map((k) => <td key={k} style={cell}>{fmtI(r.out[k] || 0)}</td>)}
                   <td style={{ ...cell, color: COLORS.negative }}>{fmtI(r.total)}</td><td style={{ ...cell, fontWeight: 700, color: r.end < 0 ? COLORS.negative : COLORS.positive }}>{fmtI(r.end)}</td>
                 </tr>
               ))}
