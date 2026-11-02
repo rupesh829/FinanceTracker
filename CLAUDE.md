@@ -146,5 +146,7 @@ Editing files directly on github.com does **not** update the live site — `npm 
 
 27. **Capital timing.** Each asset has `startYear/startMonth` (0 = available today; stored as numbers, not a date string, so Sheets can't coerce it). The asset joins the pool in that year and compounds only for the remaining months of the join year. The yearly growth rate is the principal-weighted yield of assets active that year. One-time corpus additions are stored as the `inflows` JSON row in `RetirementConfig` (`name, amount [lakhs], year, month, targets`), shown in the ledger's "Added" column; they earn the pool rate. NPV discount rate stays the all-assets weighted yield.
 
+28. **Actuals, review, alerts, suggestions.** New tab RetirementActuals (rows id=<itemId>_<year>, itemId, year, amount): an actual entered for an item+year REPLACES the planned value in the Cash Runway for that year. family.planStartYear fixes the first ledger year (so past years stay visible); costs are in that year's rupees and inflate from it. actualCorpus (year → rupees) is stored in RetirementConfig; the Year Review tab compares it with the pure-plan balance (endP, no actuals). Alerts = one-time or every-N-year items ≥ ₹2 L due within 2 years. Suggestions are rule-based (funding, runway, real return, concentration, plan vs actual).
+
 
 
