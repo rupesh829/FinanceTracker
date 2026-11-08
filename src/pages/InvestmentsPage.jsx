@@ -10,19 +10,16 @@ import {
 import Modal from "../components/Modal.jsx";
 import Field from "../components/Field.jsx";
 import { getTable, setTable } from "../api.js";
+import { useRate } from "../RateContext.jsx";
 import {
-  COLORS, CURRENCIES, colorForClass, sansFont, fmt, pct, todayStr, currentYearStr, sortRows, parseAmount, splitValidRows, isDuplicateValue, effectiveAmountAt,
-  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, addDays, toISODate, yearOf,
+  COLORS, CURRENCIES, FREQ_MONTHS, FREQ_LABEL, colorForClass, sansFont, fmt, pct, todayStr, currentYearStr, sortRows, parseAmount, splitValidRows, isDuplicateValue, effectiveAmountAt,
+  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, addDays, toISODate, yearOf, toINR,
 } from "../styles.js";
 
-const FREQ_MONTHS = { "Monthly": 1, "Quarterly": 3, "Half Yearly": 6, "Annually": 12, "None": null };
-const FREQ_LABEL = { "Monthly": "mo", "Quarterly": "qtr", "Half Yearly": "6mo", "Annually": "yr" };
 const DEFAULT_ASSET_CLASSES = ["Real Estate", "Equity", "Mutual Fund", "Fixed Deposit", "Crypto"];
 const INCOME_TYPES = ["Rent", "Dividend", "Interest"];
 const LOG_CAP = 500;
-
-// effectiveAmountAt is now shared in styles.js (used by Debts' EMI/APR
-// history and Expenses' recurring-amount history too).
+const bool = (v) => v === true || String(v).toUpperCase() === "TRUE";
 
 function generateAutoEntries(inv, manualEntriesForInv) {
   const months = FREQ_MONTHS[inv.returnFrequency];
@@ -34,11 +31,6 @@ function generateAutoEntries(inv, manualEntriesForInv) {
   const due = [];
   let k = 1;
   while (k < 2000) {
-    // A period runs from the day AFTER one anniversary through the next
-    // anniversary (inclusive), paid the day after that — e.g. a holding
-    // anniversary'd on the 1st logs period 6/1-6/30, paid 7/1. (Previously
-    // this ran anniversary-to-anniversary and paid on the closing anniversary
-    // itself, e.g. 5/31-6/29 paid 6/30 — off by one day throughout.)
     const periodStart = addDays(addMonthsClamped(inv.purchaseDate, (k - 1) * months), 1);
     const payDate = addDays(addMonthsClamped(inv.purchaseDate, k * months), 1);
     if (payDate > cutoff) break;
@@ -67,8 +59,6 @@ function rebuildIncome(invList, storedIncome) {
   return [...manual, ...auto];
 }
 
-// Sheets stores flat rows; returnHistory (an array) is serialized to/from a
-// JSON string in a single cell.
 function deserializeInv(row) {
   let history = [];
   try { history = row.returnHistoryJSON ? JSON.parse(row.returnHistoryJSON) : []; } catch (e) { history = []; }
@@ -76,8 +66,10 @@ function deserializeInv(row) {
     ...row,
     invested: parseAmount(row.invested),
     currentValue: parseAmount(row.currentValue),
+    closingAmount: parseAmount(row.closingAmount),
+    forRetirement: row.forRetirement === undefined || row.forRetirement === "" ? true : bool(row.forRetirement),
     returnHistory: history,
-    currency: row.currency || "INR", // legacy rows predate the currency field
+    currency: row.currency || "INR",
   };
 }
 function serializeInv(inv) {
@@ -85,10 +77,15 @@ function serializeInv(inv) {
   return { ...rest, returnHistoryJSON: JSON.stringify(returnHistory || []) };
 }
 
+const isEnded = (inv) => !!inv.endDate && inv.endDate < todayStr();
+// What an ended holding finally returned: the closing amount if entered, else the last known value.
+const closingOf = (inv) => (inv.closingAmount > 0 ? inv.closingAmount : inv.currentValue);
+
 export default function InvestmentsPage() {
+  const { rate } = useRate();
   const [investments, setInvestments] = useState([]);
   const [income, setIncome] = useState([]);
-  const [assetClasses, setAssetClasses] = useState([]); // [{id, name}]
+  const [assetClasses, setAssetClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [autoAddedCount, setAutoAddedCount] = useState(0);
   const [showAddInvestment, setShowAddInvestment] = useState(false);
@@ -103,21 +100,20 @@ export default function InvestmentsPage() {
   const [sortDir, setSortDir] = useState("asc");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
+  const [formError, setFormError] = useState("");
 
-  // --- income log: on-demand, not rendered by default (was slow with lots
-  // of auto-generated rows) ---
   const [showIncomeLog, setShowIncomeLog] = useState(false);
   const [logFilters, setLogFilters] = useState({ from: "", to: "", type: "All", investmentId: "All", source: "All", currency: "All" });
 
   const blankInvForm = {
-    name: "", assetClass: "", currency: "INR", invested: "", currentValue: "", purchaseDate: "", endDate: "",
-    returnFrequency: "None", returnType: "Rent", initialAmount: "", returnHistory: [],
+    name: "", assetClass: "", currency: "INR", invested: "", currentValue: "", purchaseDate: "", endDate: "", closingAmount: "",
+    forRetirement: true, returnFrequency: "None", returnType: "Rent", initialAmount: "", returnHistory: [],
     reinvestedFromId: "", newRateDate: "", newRateAmount: "",
   };
   const [invForm, setInvForm] = useState(blankInvForm);
   const [incForm, setIncForm] = useState({ investmentId: "", date: "", type: "Rent", amount: "", periodStart: "", periodEnd: "" });
   const [newClassName, setNewClassName] = useState("");
-  const [renameDrafts, setRenameDrafts] = useState({}); // {classId: draftName}
+  const [renameDrafts, setRenameDrafts] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -162,11 +158,13 @@ export default function InvestmentsPage() {
     })();
   }, []);
 
+  // Returns true on success so callers can keep a form open when saving fails.
   const persist = async (nextInv, nextInc) => {
     try {
       if (nextInv) await setTable("Investments", nextInv.map(serializeInv));
       if (nextInc) await setTable("Income", nextInc);
-    } catch (e) { setError("Save failed: " + e.message); }
+      return true;
+    } catch (e) { setError("Save failed: " + e.message); return false; }
   };
   const persistClasses = async (next) => {
     try { await setTable("AssetClasses", next); } catch (e) { setError("Save failed: " + e.message); }
@@ -178,24 +176,34 @@ export default function InvestmentsPage() {
     return present.length ? present : ["INR"];
   }, [investments]);
 
+  // Per currency: invested counts every holding (minus reinvested capital); current value counts
+  // only active holdings; ended holdings contribute their closing amount to the return.
   const totalsByCurrency = useMemo(() => {
     const out = {};
     CURRENCIES.forEach((cur) => {
       const invList = investments.filter((i) => (i.currency || "INR") === cur);
       const incList = income.filter((e) => (e.currency || "INR") === cur);
+      const active = invList.filter((i) => !isEnded(i)), ended = invList.filter(isEnded);
       const invested = invList.filter((i) => !i.reinvestedFromId).reduce((s, i) => s + i.invested, 0);
-      const current = invList.reduce((s, i) => s + i.currentValue, 0);
+      const current = active.reduce((s, i) => s + i.currentValue, 0);
       const totalIncome = incList.reduce((s, i) => s + i.amount, 0);
-      const capitalGain = current - invList.reduce((s, i) => s + i.invested, 0);
+      const capitalGain = active.reduce((s, i) => s + i.currentValue - i.invested, 0) + ended.reduce((s, i) => s + closingOf(i) - i.invested, 0);
       const totalReturn = capitalGain + totalIncome;
       out[cur] = { invested, current, totalIncome, totalReturn, returnPct: invested ? (totalReturn / invested) * 100 : 0 };
     });
     return out;
   }, [investments, income]);
 
+  const inrTotals = useMemo(() => {
+    const o = { invested: 0, current: 0, totalIncome: 0, totalReturn: 0 };
+    CURRENCIES.forEach((c) => Object.keys(o).forEach((k) => { o[k] += toINR(totalsByCurrency[c][k], c, rate); }));
+    o.returnPct = o.invested ? (o.totalReturn / o.invested) * 100 : 0;
+    return o;
+  }, [totalsByCurrency, rate]);
+
   const allocation = useMemo(() => {
     const byClass = {};
-    investments.filter((i) => (i.currency || "INR") === chartCurrency).forEach((i) => {
+    investments.filter((i) => (i.currency || "INR") === chartCurrency && !isEnded(i)).forEach((i) => {
       byClass[i.assetClass] = (byClass[i.assetClass] || 0) + i.currentValue;
     });
     return Object.entries(byClass).map(([name, value]) => ({ name, value }));
@@ -223,14 +231,20 @@ export default function InvestmentsPage() {
     const list = investments
       .filter((inv) => (filterClass === "All" || inv.assetClass === filterClass) && (filterCurrency === "All" || (inv.currency || "INR") === filterCurrency))
       .map((inv) => {
+        const ended = isEnded(inv);
         const incomeForInv = income.filter((i) => i.investmentId === inv.id).reduce((s, i) => s + i.amount, 0);
-        const capGain = inv.currentValue - inv.invested;
+        const closing = closingOf(inv);
+        const capGain = (ended ? closing : inv.currentValue) - inv.invested;
         const totalRet = capGain + incomeForInv;
         const currentRate = inv.returnHistory && inv.returnHistory.length ? [...inv.returnHistory].sort((a, b) => new Date(a.date) - new Date(b.date)).slice(-1)[0].amount : 0;
-        return { ...inv, incomeForInv, capGain, totalRet, totalRetPct: inv.invested ? (totalRet / inv.invested) * 100 : 0, currentRate };
+        const reinvestedInto = investments.find((x) => String(x.reinvestedFromId) === String(inv.id))?.name || "";
+        return { ...inv, ended, incomeForInv, closing, capGain, totalRet, earned: totalRet, totalRetPct: inv.invested ? (totalRet / inv.invested) * 100 : 0, currentRate, reinvestedInto };
       });
     return sortRows(list, sortField, sortDir);
   }, [investments, income, filterClass, filterCurrency, sortField, sortDir]);
+
+  const activeHoldings = holdingsWithReturn.filter((h) => !h.ended);
+  const inactiveHoldings = holdingsWithReturn.filter((h) => h.ended);
 
   const incomeLog = useMemo(() => {
     return [...income].sort((a, b) => b.date.localeCompare(a.date)).map((e) => ({
@@ -250,12 +264,13 @@ export default function InvestmentsPage() {
     );
   }, [incomeLog, logFilters, showIncomeLog]);
 
-  const openAddInvestment = () => { setEditingId(null); setInvForm({ ...blankInvForm, assetClass: classNames[0] || "" }); setShowAddInvestment(true); };
+  const openAddInvestment = () => { setEditingId(null); setFormError(""); setInvForm({ ...blankInvForm, assetClass: classNames[0] || "" }); setShowAddInvestment(true); };
   const openEditInvestment = (inv) => {
-    setEditingId(inv.id);
+    setEditingId(inv.id); setFormError("");
     setInvForm({
       name: inv.name, assetClass: inv.assetClass, currency: inv.currency || "INR", invested: inv.invested, currentValue: inv.currentValue,
-      purchaseDate: inv.purchaseDate, endDate: inv.endDate || "", returnFrequency: inv.returnFrequency, returnType: inv.returnType,
+      purchaseDate: inv.purchaseDate, endDate: inv.endDate || "", closingAmount: inv.closingAmount || "", forRetirement: inv.forRetirement !== false,
+      returnFrequency: inv.returnFrequency, returnType: inv.returnType,
       initialAmount: "", returnHistory: inv.returnHistory || [], reinvestedFromId: inv.reinvestedFromId || "",
       newRateDate: "", newRateAmount: "",
     });
@@ -269,15 +284,22 @@ export default function InvestmentsPage() {
   };
 
   const saveInvestment = async () => {
-    if (!invForm.name || !invForm.invested || !invForm.currentValue || !invForm.assetClass) return;
+    const missing = [];
+    if (!invForm.name.trim()) missing.push("Name");
+    if (invForm.invested === "" || invForm.invested === null) missing.push("Amount invested");
+    if (invForm.currentValue === "" || invForm.currentValue === null) missing.push("Current value");
+    if (!invForm.assetClass) missing.push("Asset class");
+    if (missing.length) { setFormError(`Please fill: ${missing.join(", ")}`); return; }
     if (!editingId && isDuplicateValue(investments, "name", invForm.name)) {
       if (!window.confirm(`An investment named "${invForm.name}" already exists. Add another one with the same name anyway?`)) return;
     }
+    setFormError("");
     let nextInv;
     if (editingId) {
       nextInv = investments.map((inv) => inv.id === editingId ? {
-        ...inv, name: invForm.name, assetClass: invForm.assetClass, currency: invForm.currency, invested: parseAmount(invForm.invested),
+        ...inv, name: invForm.name.trim(), assetClass: invForm.assetClass, currency: invForm.currency, invested: parseAmount(invForm.invested),
         currentValue: parseAmount(invForm.currentValue), purchaseDate: invForm.purchaseDate, endDate: invForm.endDate || "",
+        closingAmount: parseAmount(invForm.closingAmount), forRetirement: !!invForm.forRetirement,
         returnFrequency: invForm.returnFrequency, returnType: invForm.returnType, returnHistory: invForm.returnHistory,
         reinvestedFromId: invForm.reinvestedFromId || "",
       } : inv);
@@ -285,20 +307,26 @@ export default function InvestmentsPage() {
       const history = invForm.returnFrequency !== "None" && invForm.initialAmount
         ? [{ date: invForm.purchaseDate || todayStr(), amount: parseAmount(invForm.initialAmount) }] : [];
       nextInv = [...investments, {
-        id: Date.now().toString(), name: invForm.name, assetClass: invForm.assetClass, currency: invForm.currency,
+        id: Date.now().toString(), name: invForm.name.trim(), assetClass: invForm.assetClass, currency: invForm.currency,
         invested: parseAmount(invForm.invested), currentValue: parseAmount(invForm.currentValue),
         purchaseDate: invForm.purchaseDate || todayStr(), endDate: invForm.endDate || "",
+        closingAmount: parseAmount(invForm.closingAmount), forRetirement: !!invForm.forRetirement,
         returnFrequency: invForm.returnFrequency, returnType: invForm.returnType, returnHistory: history,
         reinvestedFromId: invForm.reinvestedFromId || "",
       }];
     }
-    // Auto income entries carry the currency of their parent investment,
-    // so if currency was just changed on edit, regenerate to pick it up.
     const nextInc = rebuildIncome(nextInv, income);
     setInvestments(nextInv);
     setIncome(nextInc);
-    await persist(nextInv, nextInc);
+    const ok = await persist(nextInv, nextInc);
+    if (!ok) { setFormError("Could not save to Google Sheets — check your connection / API_URL and press Save again."); return; }
     setShowAddInvestment(false);
+  };
+
+  const toggleRet = async (h) => {
+    const nextInv = investments.map((i) => (i.id === h.id ? { ...i, forRetirement: !(i.forRetirement !== false) } : i));
+    setInvestments(nextInv);
+    await persist(nextInv, null);
   };
 
   const deleteInvestment = async (inv) => {
@@ -332,7 +360,6 @@ export default function InvestmentsPage() {
     setShowAddIncome(false);
   };
 
-  // --- asset class management ---
   const addClass = async () => {
     const name = newClassName.trim();
     if (!name || classNames.includes(name)) return;
@@ -365,8 +392,8 @@ export default function InvestmentsPage() {
 
   const exportCSV = () => {
     const invRows = [
-      ["Type", "Name", "Asset Class", "Currency", "Invested", "Current Value", "Start Date", "End Date", "Reinvested From", "Return Frequency", "Return Type", "Current Rate"],
-      ...holdingsWithReturn.map((i) => ["Investment", i.name, i.assetClass, i.currency || "INR", i.invested, i.currentValue, i.purchaseDate, i.endDate || "", investments.find((x) => x.id === i.reinvestedFromId)?.name || "", i.returnFrequency, i.returnType, i.currentRate]),
+      ["Type", "Name", "Asset Class", "Currency", "Invested", "Current Value", "Closing Amount", "For Retirement", "Start Date", "End Date", "Reinvested From", "Return Frequency", "Return Type", "Current Rate"],
+      ...holdingsWithReturn.map((i) => ["Investment", i.name, i.assetClass, i.currency || "INR", i.invested, i.currentValue, i.closingAmount || "", i.forRetirement !== false ? "Yes" : "No", i.purchaseDate, i.endDate || "", investments.find((x) => x.id === i.reinvestedFromId)?.name || "", i.returnFrequency, i.returnType, i.currentRate]),
     ];
     const rateRows = [["Type", "Investment Name", "Effective Date", "Amount"], ...investments.flatMap((i) => (i.returnHistory || []).map((h) => ["Rate change", i.name, h.date, h.amount]))];
     const incRows = [["Type", "Investment Name", "Income Type", "Amount", "Currency", "Date", "Period Start", "Period End", "Source"], ...income.map((e) => { const inv = investments.find((i) => i.id === e.investmentId); return ["Income", inv ? inv.name : e.investmentId, e.type, e.amount, e.currency || "INR", e.date, e.periodStart || "", e.periodEnd || "", e.source || "manual"]; })];
@@ -387,7 +414,32 @@ export default function InvestmentsPage() {
     return <Layers size={16} />;
   };
 
+  const nameCell = (h) => (
+    <td style={td()}>
+      {h.name}
+      <span style={{ fontSize: 10, color: COLORS.muted, border: `1px solid ${COLORS.line}`, padding: "1px 5px", marginLeft: 6 }}>{h.currency || "INR"}</span>
+      {h.reinvestedFromId && <span style={{ fontSize: 10, color: COLORS.accent, border: `1px solid ${COLORS.accent}`, padding: "1px 5px", marginLeft: 6 }}>Reinvested</span>}
+      <div style={{ fontSize: 11, color: COLORS.muted }}>{h.assetClass}</div>
+    </td>
+  );
+  const actionsCell = (h) => (
+    <td style={td("right")}>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <Pencil size={14} style={{ cursor: "pointer", color: COLORS.muted }} onClick={() => openEditInvestment(h)} />
+        <Trash2 size={14} style={{ cursor: "pointer", color: COLORS.negative }} onClick={() => deleteInvestment(h)} />
+      </div>
+    </td>
+  );
+
   if (loading) return <div style={{ fontFamily: sansFont, padding: 60, textAlign: "center", color: COLORS.muted }}>Loading investments…</div>;
+
+  const card = (label, value, sub, positive) => (
+    <div style={{ background: COLORS.bg, padding: "18px 20px" }}>
+      <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 8px", fontFamily: sansFont }}>{label}</p>
+      <p style={{ fontSize: 24, margin: 0, fontWeight: 400 }}>{value}</p>
+      {sub && <p style={{ fontSize: 13, margin: "4px 0 0", color: positive ? COLORS.positive : COLORS.negative, display: "flex", alignItems: "center", gap: 4, fontFamily: sansFont }}>{positive ? <TrendingUp size={14} /> : <TrendingDown size={14} />} {sub}</p>}
+    </div>
+  );
 
   return (
     <div style={{ maxWidth: 1080, margin: "0 auto", padding: "28px 24px 80px", color: COLORS.ink }}>
@@ -405,30 +457,34 @@ export default function InvestmentsPage() {
         </div>
       )}
 
+      {activeCurrencies.length > 1 && (
+        <div style={{ marginBottom: 8 }}>
+          <p style={{ fontFamily: sansFont, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 6px" }}>All holdings — in INR (USD at ₹{rate})</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: COLORS.ink, marginBottom: 16 }}>
+            {card("Total invested", fmt(inrTotals.invested, "INR"))}
+            {card("Current value (active)", fmt(inrTotals.current, "INR"))}
+            {card("Income to date", fmt(inrTotals.totalIncome, "INR"))}
+            {card("Total return", fmt(inrTotals.totalReturn, "INR"), pct(inrTotals.returnPct), inrTotals.returnPct >= 0)}
+          </div>
+        </div>
+      )}
+
       {activeCurrencies.map((cur) => (
         <div key={cur} style={{ marginBottom: 8 }}>
           <p style={{ fontFamily: sansFont, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 6px" }}>{cur} holdings</p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: COLORS.ink, marginBottom: 16 }}>
-            {[
-              { label: "Total invested", value: fmt(totalsByCurrency[cur].invested, cur) },
-              { label: "Current value", value: fmt(totalsByCurrency[cur].current, cur) },
-              { label: "Income to date", value: fmt(totalsByCurrency[cur].totalIncome, cur) },
-              { label: "Total return", value: fmt(totalsByCurrency[cur].totalReturn, cur), sub: pct(totalsByCurrency[cur].returnPct) },
-            ].map((m, idx) => (
-              <div key={idx} style={{ background: COLORS.bg, padding: "18px 20px" }}>
-                <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 8px", fontFamily: sansFont }}>{m.label}</p>
-                <p style={{ fontSize: 24, margin: 0, fontWeight: 400 }}>{m.value}</p>
-                {m.sub && <p style={{ fontSize: 13, margin: "4px 0 0", color: totalsByCurrency[cur].returnPct >= 0 ? COLORS.positive : COLORS.negative, display: "flex", alignItems: "center", gap: 4, fontFamily: sansFont }}>{totalsByCurrency[cur].returnPct >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />} {m.sub}</p>}
-              </div>
-            ))}
+            {card("Total invested", fmt(totalsByCurrency[cur].invested, cur))}
+            {card("Current value (active)", fmt(totalsByCurrency[cur].current, cur))}
+            {card("Income to date", fmt(totalsByCurrency[cur].totalIncome, cur))}
+            {card("Total return", fmt(totalsByCurrency[cur].totalReturn, cur), pct(totalsByCurrency[cur].returnPct), totalsByCurrency[cur].returnPct >= 0)}
           </div>
         </div>
       ))}
-      {investments.some((i) => i.reinvestedFromId) && <p style={{ fontFamily: sansFont, fontSize: 11, color: COLORS.muted, margin: "0 0 30px" }}>Total invested excludes holdings marked as funded by reinvestment from another holding.</p>}
+      <p style={{ fontFamily: sansFont, fontSize: 11, color: COLORS.muted, margin: "0 0 24px" }}>Total invested excludes holdings funded by reinvestment. Current value counts active holdings only; ended holdings add their closing amount to the return.</p>
 
-      <div style={{ marginBottom: 36, marginTop: investments.some((i) => i.reinvestedFromId) ? 0 : 20 }}>
+      <div style={{ marginBottom: 36 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <h3 style={sectionHeading}>Allocation by asset class</h3>
+          <h3 style={sectionHeading}>Allocation by asset class (active)</h3>
           <select value={chartCurrency} onChange={(e) => setChartCurrency(e.target.value)} style={selectStyle}>
             {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -441,7 +497,7 @@ export default function InvestmentsPage() {
             <RTooltip formatter={(v) => fmt(v, chartCurrency)} contentStyle={{ fontFamily: sansFont, fontSize: 12, border: `1px solid ${COLORS.ink}`, borderRadius: 4 }} />
           </PieChart>
         </ResponsiveContainer>
-        {allocation.length === 0 && <p style={{ fontFamily: sansFont, fontSize: 12, color: COLORS.muted, textAlign: "center" }}>No {chartCurrency} holdings yet.</p>}
+        {allocation.length === 0 && <p style={{ fontFamily: sansFont, fontSize: 12, color: COLORS.muted, textAlign: "center" }}>No active {chartCurrency} holdings yet.</p>}
       </div>
 
       <div style={{ marginBottom: 44 }}>
@@ -474,7 +530,7 @@ export default function InvestmentsPage() {
 
       <div style={{ marginBottom: 44 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-          <h3 style={sectionHeading}>Holdings</h3>
+          <h3 style={sectionHeading}>Active holdings</h3>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <select value={filterCurrency} onChange={(e) => setFilterCurrency(e.target.value)} style={selectStyle}>
               <option value="All">All currencies</option>
@@ -495,35 +551,53 @@ export default function InvestmentsPage() {
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sansFont, fontSize: 13 }}>
           <thead><tr style={{ borderBottom: `2px solid ${COLORS.ink}` }}>
-            {["", "Name", "Return schedule", "Start date", "End date", "Invested", "Income earned", "Total return", ""].map((h, i) => <th key={i} style={th(i > 4 && i < 8 ? "right" : "left")}>{h}</th>)}
+            {["", "Name", "Return schedule", "Start date", "End date", "Invested", "Income earned", "Total return", "Retirement", ""].map((h, i) => <th key={i} style={th(i > 4 && i < 8 ? "right" : "left")}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {holdingsWithReturn.map((h) => (
+            {activeHoldings.map((h) => (
               <tr key={h.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
                 <td style={{ ...td(), color: colorForClass(h.assetClass, classNames) }}>{assetIcon(h.assetClass)}</td>
-                <td style={td()}>
-                  {h.name}
-                  <span style={{ fontSize: 10, color: COLORS.muted, border: `1px solid ${COLORS.line}`, padding: "1px 5px", marginLeft: 6 }}>{h.currency || "INR"}</span>
-                  {h.endDate && new Date(h.endDate) < new Date(todayStr()) && <span style={{ fontSize: 10, color: COLORS.negative, border: `1px solid ${COLORS.negative}`, padding: "1px 5px", marginLeft: 6 }}>Ended</span>}
-                  {h.reinvestedFromId && <span style={{ fontSize: 10, color: COLORS.accent, border: `1px solid ${COLORS.accent}`, padding: "1px 5px", marginLeft: 6 }}>Reinvested</span>}
-                  <div style={{ fontSize: 11, color: COLORS.muted }}>{h.assetClass}</div>
-                </td>
+                {nameCell(h)}
                 <td style={{ ...td(), fontSize: 12, color: COLORS.muted }}>{h.returnFrequency !== "None" && h.currentRate ? `${h.returnType} · ${fmt(h.currentRate, h.currency)} / ${FREQ_LABEL[h.returnFrequency]}${h.returnHistory.length > 1 ? " · changed" : ""}` : "—"}</td>
                 <td style={td()}>{h.purchaseDate}</td>
                 <td style={td()}>{h.endDate || "—"}</td>
                 <td style={td("right")}>{fmt(h.invested, h.currency)}</td>
                 <td style={td("right")}>{fmt(h.incomeForInv, h.currency)}</td>
                 <td style={{ ...td("right"), fontWeight: 700, color: h.totalRet >= 0 ? COLORS.positive : COLORS.negative }}>{pct(h.totalRetPct)}</td>
-                <td style={td("right")}>
-                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <Pencil size={14} style={{ cursor: "pointer", color: COLORS.muted }} onClick={() => openEditInvestment(h)} />
-                    <Trash2 size={14} style={{ cursor: "pointer", color: COLORS.negative }} onClick={() => deleteInvestment(h)} />
-                  </div>
-                </td>
+                <td style={td()}><input type="checkbox" checked={h.forRetirement !== false} onChange={() => toggleRet(h)} title="Use for retirement planning" /></td>
+                {actionsCell(h)}
               </tr>
             ))}
           </tbody>
         </table>
+        {activeHoldings.length === 0 && <p style={{ fontFamily: sansFont, fontSize: 12, color: COLORS.muted, marginTop: 10 }}>No active holdings.</p>}
+      </div>
+
+      <div style={{ marginBottom: 44 }}>
+        <h3 style={{ ...sectionHeading, marginBottom: 14 }}>Inactive (ended) holdings</h3>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: sansFont, fontSize: 13 }}>
+          <thead><tr style={{ borderBottom: `2px solid ${COLORS.ink}` }}>
+            {["", "Name", "Start date", "Ended", "Invested", "Income earned", "Amount at closing", "Earned", "Re-invested", ""].map((h, i) => <th key={i} style={th(i > 3 && i < 8 ? "right" : "left")}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {inactiveHoldings.map((h) => (
+              <tr key={h.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                <td style={{ ...td(), color: colorForClass(h.assetClass, classNames) }}>{assetIcon(h.assetClass)}</td>
+                {nameCell(h)}
+                <td style={td()}>{h.purchaseDate}</td>
+                <td style={td()}>{h.endDate}</td>
+                <td style={td("right")}>{fmt(h.invested, h.currency)}</td>
+                <td style={td("right")}>{fmt(h.incomeForInv, h.currency)}</td>
+                <td style={td("right")}>{fmt(h.closing, h.currency)}{!(h.closingAmount > 0) && <div style={{ fontSize: 10, color: COLORS.gold }}>not entered</div>}</td>
+                <td style={{ ...td("right"), fontWeight: 700, color: h.earned >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(h.earned, h.currency)}<div style={{ fontSize: 10, fontWeight: 400, color: COLORS.muted }}>{pct(h.totalRetPct)}</div></td>
+                <td style={td()}>{h.reinvestedInto ? `Yes (${h.reinvestedInto})` : "No"}</td>
+                {actionsCell(h)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {inactiveHoldings.length === 0 && <p style={{ fontFamily: sansFont, fontSize: 12, color: COLORS.muted, marginTop: 10 }}>Nothing has ended yet. A holding moves here once its end date passes.</p>}
+        <p style={{ fontFamily: sansFont, fontSize: 11, color: COLORS.muted, marginTop: 8 }}>Earned = amount at closing + income received − invested. Edit a holding to enter its closing amount.</p>
       </div>
 
       <div style={{ marginBottom: 20 }}>
@@ -536,8 +610,8 @@ export default function InvestmentsPage() {
         {showIncomeLog && (
           <>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, fontFamily: sansFont, fontSize: 12 }}>
-              <input type="date" style={{ ...inputStyle, width: 140 }} value={logFilters.from} onChange={(e) => setLogFilters({ ...logFilters, from: e.target.value })} placeholder="From" />
-              <input type="date" style={{ ...inputStyle, width: 140 }} value={logFilters.to} onChange={(e) => setLogFilters({ ...logFilters, to: e.target.value })} placeholder="To" />
+              <input type="date" style={{ ...inputStyle, width: 140 }} value={logFilters.from} onChange={(e) => setLogFilters({ ...logFilters, from: e.target.value })} />
+              <input type="date" style={{ ...inputStyle, width: 140 }} value={logFilters.to} onChange={(e) => setLogFilters({ ...logFilters, to: e.target.value })} />
               <select style={selectStyle} value={logFilters.type} onChange={(e) => setLogFilters({ ...logFilters, type: e.target.value })}>
                 <option value="All">All types</option>
                 {INCOME_TYPES.map((t) => <option key={t}>{t}</option>)}
@@ -597,16 +671,22 @@ export default function InvestmentsPage() {
             <Field label="Start date"><input type="date" style={inputStyle} value={invForm.purchaseDate} onChange={(e) => setInvForm({ ...invForm, purchaseDate: e.target.value })} /></Field>
             <Field label="End date"><input type="date" style={inputStyle} value={invForm.endDate} onChange={(e) => setInvForm({ ...invForm, endDate: e.target.value })} /></Field>
           </div>
+          {invForm.endDate && (
+            <Field label={`Amount at closing (${invForm.currency})`}><input type="number" style={inputStyle} value={invForm.closingAmount} onChange={(e) => setInvForm({ ...invForm, closingAmount: e.target.value })} placeholder="What you received when it ended" /></Field>
+          )}
           <Field label="Reinvested from (optional)">
             <select style={inputStyle} value={invForm.reinvestedFromId} onChange={(e) => setInvForm({ ...invForm, reinvestedFromId: e.target.value })}>
               <option value="">Not reinvested — new capital</option>
               {investments.filter((i) => i.id !== editingId).map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
             </select>
           </Field>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, margin: "4px 0 10px" }}>
+            <input type="checkbox" checked={!!invForm.forRetirement} onChange={(e) => setInvForm({ ...invForm, forRetirement: e.target.checked })} /> Use for retirement planning
+          </label>
           <div style={{ borderTop: `1px solid ${COLORS.line}`, margin: "14px 0 10px", paddingTop: 10 }}>
             <p style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: COLORS.muted, margin: "0 0 10px" }}>Recurring return (optional)</p>
             <div style={{ display: "flex", gap: 10 }}>
-              <Field label="Frequency"><select style={inputStyle} value={invForm.returnFrequency} onChange={(e) => setInvForm({ ...invForm, returnFrequency: e.target.value })}><option>None</option><option>Monthly</option><option>Quarterly</option><option>Half Yearly</option><option>Annually</option></select></Field>
+              <Field label="Frequency"><select style={inputStyle} value={invForm.returnFrequency} onChange={(e) => setInvForm({ ...invForm, returnFrequency: e.target.value })}><option>None</option>{Object.keys(FREQ_MONTHS).map((f) => <option key={f}>{f}</option>)}</select></Field>
               <Field label="Type"><select style={inputStyle} value={invForm.returnType} onChange={(e) => setInvForm({ ...invForm, returnType: e.target.value })}>{INCOME_TYPES.map((t) => <option key={t}>{t}</option>)}</select></Field>
             </div>
             {!editingId ? (
@@ -629,6 +709,7 @@ export default function InvestmentsPage() {
               </>
             )}
           </div>
+          {formError && <p style={{ fontFamily: sansFont, fontSize: 12, color: COLORS.negative, margin: "8px 0 0" }}>{formError}</p>}
           <button onClick={saveInvestment} style={{ ...btnStyle, width: "100%", justifyContent: "center", padding: "10px 0", marginTop: 8 }}>{editingId ? "Save changes" : "Save investment"}</button>
         </Modal>
       )}

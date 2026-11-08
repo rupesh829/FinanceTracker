@@ -4,9 +4,10 @@ import { Plus, Landmark, CreditCard, Car, GraduationCap, Home, HelpCircle, Penci
 import Modal from "../components/Modal.jsx";
 import Field from "../components/Field.jsx";
 import { getTable, setTable } from "../api.js";
+import { useRate } from "../RateContext.jsx";
 import {
   COLORS, DEBT_COLORS, CURRENCIES, sansFont, fmt, todayStr, currentYearStr, sortRows, parseAmount, splitValidRows, isDuplicateValue, effectiveAmountAt,
-  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, toISODate, yearOf,
+  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, toISODate, yearOf,toINR,
 } from "../styles.js";
 
 const LOAN_TYPES = ["Mortgage", "Auto Loan", "Student Loan", "Personal Loan", "Credit Card", "Other"];
@@ -136,6 +137,7 @@ function serializeDebt(debt) {
 }
 
 export default function DebtsPage() {
+  const { rate } = useRate();
   const [debts, setDebts] = useState([]);
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -417,6 +419,7 @@ export default function DebtsPage() {
               <div key={idx} style={{ background: COLORS.bg, padding: "18px 20px" }}>
                 <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 8px", fontFamily: sansFont }}>{m.label}</p>
                 <p style={{ fontSize: 24, margin: 0, fontWeight: 400 }}>{m.value}</p>
+                <p style={{ fontFamily: sansFont, fontSize: 12, margin: "0 0 20px" }}>All loans in INR (USD at ₹{rate}): balance <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].currentBalance, c, rate), 0), "INR")}</b> · paid <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].totalPaid, c, rate), 0), "INR")}</b></p>
               </div>
             ))}
           </div>

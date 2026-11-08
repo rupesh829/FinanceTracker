@@ -6,14 +6,15 @@ import Field from "../components/Field.jsx";
 import { getTable, setTable } from "../api.js";
 import {
   COLORS, CURRENCIES, sansFont, fmt, todayStr, currentYearStr, sortRows, parseAmount, splitValidRows, isDuplicateValue, effectiveAmountAt,
-  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, toISODate, yearOf,
+  inputStyle, selectStyle, btnStyle, btnStyleGhost, sectionHeading, th, td, addMonthsClamped, toISODate, yearOf,FREQ_MONTHS
 } from "../styles.js";
 
 const EXPENSE_CATEGORIES = ["Rent", "Utilities", "Groceries", "Subscriptions", "Insurance", "Dining", "Transport", "Healthcare", "Entertainment", "Other"];
 const INCOMING_CATEGORIES = ["Loan Repayment", "Reimbursement", "Rent Share", "Gift", "Other"];
-const FREQUENCIES = ["One-time", "Monthly", "Quarterly", "Half Yearly", "Annually"];
-const FREQ_MONTHS = { "Monthly": 1, "Quarterly": 3, "Half Yearly": 6, "Annually": 12 };
+const FREQUENCIES = ["One-time", ...Object.keys(FREQ_MONTHS)];
+//const FREQ_MONTHS = { "Monthly": 1, "Quarterly": 3, "Half Yearly": 6, "Annually": 12 };
 const LOG_CAP = 500;
+
 
 // Recurring definitions (a subscription, a rent-share arrangement, etc.) are
 // self-healing just like Investments/Debts elsewhere in this app: every load

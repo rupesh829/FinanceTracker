@@ -45,6 +45,7 @@ export const sansFont = "Arial, sans-serif";
 export const CURRENCIES = ["INR", "USD"];
 export const CURRENCY_SYMBOLS = { INR: "₹", USD: "$" };
 export const CURRENCY_LOCALE = { INR: "en-IN", USD: "en-US" };
+export const toINR = (n, cur, rate) => (cur === "USD" ? (n || 0) * rate : (n || 0));
 
 export const fmt = (n, currency = "INR") =>
   (CURRENCY_SYMBOLS[currency] || "₹") + Math.round(n || 0).toLocaleString(CURRENCY_LOCALE[currency] || "en-IN");
@@ -53,6 +54,10 @@ export const pct = (n) => (n >= 0 ? "+" : "") + (n || 0).toFixed(1) + "%";
 export const todayStr = () => new Date().toISOString().slice(0, 10);
 export const yearOf = (dateStr) => (dateStr || "").slice(0, 4);
 export const currentYearStr = () => new Date().getFullYear().toString();
+
+// Single source of truth for recurring frequencies. Add a new one here and every page picks it up.
+export const FREQ_MONTHS = { "Monthly": 1, "Quarterly": 3, "Half Yearly": 6, "Annually": 12 };
+export const FREQ_LABEL = { "Monthly": "mo", "Quarterly": "qtr", "Half Yearly": "6mo", "Annually": "yr" };
 
 // Generic comparator for the "Sort by" controls on list/table sections
 // (holdings, loans, W-2 entries, transfers, expenses, etc). Handles numbers

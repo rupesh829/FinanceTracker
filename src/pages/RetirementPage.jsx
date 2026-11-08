@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getTable, setTable } from "../api.js";
-import { COLORS, sansFont, serifFont, inputStyle, btnStyle, btnStyleGhost, parseAmount } from "../styles.js";
+import { useRate } from "../RateContext.jsx";
+import { COLORS, sansFont, serifFont, inputStyle, btnStyle, btnStyleGhost, parseAmount, todayStr, fmt } from "../styles.js";
 import { SEED, BASE_ASSETS, BASE_TIERS, BASE_INFL } from "../retirementSeed.js";
 
 const TAB = { cfg: "RetirementConfig", exp: "RetirementExpenses", itm: "RetirementItems", ast: "RetirementAssets", act: "RetirementActuals" };
@@ -21,6 +22,28 @@ let seq = Date.now() % 1e6;
 const nid = (p) => `${p}${(seq++).toString(36)}`;
 const gk = (t, g) => `${t}|${g}`;
 const PROTECTED = ["survival", "education", "goals", "maintenance", "lifestyle"];
+const ym = (d) => (d ? d.slice(0, 7) : "—");
+
+// ---- tier % allocation helpers ----
+const eqPct = (t) => { const n = t.length; let s = 0; return Object.fromEntries(t.map((k, i) => { const v = i === n - 1 ? +(100 - s).toFixed(2) : +(100 / n).toFixed(2); s += v; return [k, v]; })); };
+const pctTotal = (p) => Object.values(p || {}).reduce((a, b) => a + (+b || 0), 0);
+const pctPatch = (pct) => ({ pct, targets: Object.keys(pct).filter((k) => pct[k] > 0) });
+const pctText = (p) => Object.entries(p || {}).filter(([, v]) => v > 0).map(([k, v]) => `${k}(${+v}%)`).join(", ") || "Not allocated";
+const yrsSince = (d) => (Date.now() - new Date(d).getTime()) / 31557600000;
+
+// An allocation = a slice of one investment (investmentId set) or a manual asset (investmentId empty).
+// Amounts are stored in rupees (allocatedINR). Older rows stored Lakhs in `allocated`.
+const normA = (r) => {
+  const targets = Array.isArray(r.targets) ? r.targets : String(r.targets || "").split(",").filter(Boolean);
+  let pct = {}; try { pct = JSON.parse(r.pctJSON); } catch (e) {}
+  if (!pct || typeof pct !== "object" || !Object.keys(pct).length) pct = eqPct(targets);
+  const hasInr = r.allocatedINR !== undefined && r.allocatedINR !== "";
+  return {
+    id: String(r.id), name: r.name || "", investmentId: String(r.investmentId ?? ""),
+    allocatedINR: hasInr ? parseAmount(r.allocatedINR) : parseAmount(r.allocated) * 1e5,
+    roi: parseAmount(r.roi), startYear: parseAmount(r.startYear), startMonth: parseAmount(r.startMonth) || 1, ...pctPatch(pct),
+  };
+};
 
 const I = ({ v, on, w = 70, t = "number", ...p }) => (
   <input type={t} value={v ?? ""} onChange={(e) => on(t === "number" ? (e.target.value === "" ? 0 : +e.target.value) : e.target.value)} style={{ ...inputStyle, width: w, padding: "4px 6px" }} {...p} />
@@ -31,10 +54,55 @@ const S = ({ v, on, opts, w }) => (
   </select>
 );
 const Chk = ({ v, on, label }) => <label style={{ fontSize: 11, marginRight: 8, whiteSpace: "nowrap" }}><input type="checkbox" checked={!!v} onChange={(e) => on(e.target.checked)} /> {label}</label>;
+
+const PctEditor = ({ tierKeys, pct, onChange }) => {
+  const safePct = pct || {};
+  const t = pctTotal(safePct), ok = Math.abs(t - 100) < 0.05;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "130px" }}>
+      {tierKeys.map((k) => {
+        const v = safePct[k] || 0;
+        return (
+          <div key={k} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11 }}>
+            <span style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginRight: 4 }}>{k}:</span>
+            <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+              <input 
+                type="number" 
+                value={v ?? ""} 
+                onChange={(e) => {
+                  const newVal = e.target.value === "" ? 0 : +e.target.value;
+                  onChange({ ...safePct, [k]: newVal });
+                }} 
+                style={{ 
+                  width: "36px", 
+                  border: "none", 
+                  borderBottom: "1px dashed #ced4da", 
+                  background: "transparent", 
+                  textAlign: "right", 
+                  fontSize: 11, 
+                  padding: "1px 0",
+                  outline: "none" 
+                }} 
+              />
+              <span style={{ marginLeft: 2 }}>%</span>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ fontSize: 9, marginTop: 2, color: ok ? COLORS.positive : COLORS.negative }}>
+        Total {+t.toFixed(2)}%{ok ? "" : " — should be 100"}
+      </div>
+    </div>
+  );
+};
+
 const Card = ({ children, style }) => <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, padding: 16, marginBottom: 16, ...style }}>{children}</div>;
 const Del = ({ on, children = "Delete" }) => <a style={{ color: COLORS.negative, cursor: "pointer", fontSize: 12 }} onClick={on}>{children}</a>;
 const cell = { padding: "6px 5px", borderBottom: `1px solid ${COLORS.lineLight}`, verticalAlign: "top", fontSize: 12 };
 const head = { ...cell, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: COLORS.muted, textAlign: "left" };
+const banner = { background: "#E9E4F5", border: `1px solid ${COLORS.accent}`, padding: "6px 10px", fontSize: 13, fontWeight: 700, textAlign: "center", letterSpacing: "0.1em", margin: "14px 0 0" };
 
 function seedInto(items, groups, family, tiers, infl) {
   const have = new Set(items.map((x) => `${x.parentLine}|${x.name}`));
@@ -53,7 +121,6 @@ function seedInto(items, groups, family, tiers, infl) {
   return { it, gr };
 }
 
-// Old format (RetirementExpenses parents + items with parentExpenseId) -> flat items.
 function migrate(exp, itm, family) {
   const byId = {}; exp.forEach((e) => (byId[String(e.id)] = e));
   const gmap = {};
@@ -66,6 +133,7 @@ function migrate(exp, itm, family) {
 }
 
 export default function RetirementPage() {
+  const { rate } = useRate();
   const [tab, setTab] = useState("setup");
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState("Loading…");
@@ -74,8 +142,8 @@ export default function RetirementPage() {
   const [tiers, setTiers] = useState(BASE_TIERS);
   const [groups, setGroups] = useState([]);
   const [items, setItems] = useState([]);
-  const [assets, setAssets] = useState([]);
-  const [inflows, setInflows] = useState([]);
+  const [assetsRaw, setAssets] = useState([]);
+  const [invsRaw, setInvsRaw] = useState([]);
   const [actuals, setActuals] = useState([]);
   const [actualCorpus, setActualCorpus] = useState({});
   const [ySel, setYSel] = useState(now.getFullYear());
@@ -90,20 +158,40 @@ export default function RetirementPage() {
   useEffect(() => {
     (async () => {
       try {
-        const [cfg, ex, it, as, ac] = await Promise.all([TAB.cfg, TAB.exp, TAB.itm, TAB.ast, TAB.act].map(getTable));
+        const [cfg, ex, it, as, ac, invRows, incRows] = await Promise.all([TAB.cfg, TAB.exp, TAB.itm, TAB.ast, TAB.act, "Investments", "Income"].map((t) => getTable(t)));
+        const incBy = {}; incRows.forEach((r) => { incBy[r.investmentId] = (incBy[r.investmentId] || 0) + parseAmount(r.amount); });
+        const invList = invRows.filter((r) => r.id).map((r) => {
+          const initialInv = parseAmount(r.invested);
+          const inv = parseAmount(r.currentValue), cur = parseAmount(r.currentValue), y = yrsSince(r.purchaseDate), g = cur - initialInv + (incBy[r.id] || 0); 
+          return {
+            id: String(r.id), name: r.name, ccy: r.currency || "INR", invested: inv, current: cur, closing: parseAmount(r.closingAmount) || cur,
+            purchaseDate: r.purchaseDate || "", endDate: r.endDate || "",
+            forRetirement: r.forRetirement === undefined || r.forRetirement === "" ? true : bool(r.forRetirement),
+            reinvestedInto: invRows.find((x) => String(x.reinvestedFromId) === String(r.id))?.name || "",
+            actual: inv > 0 && y >= 0.5 ? (Math.pow(Math.max(0, 1 + g / inv), 1 / y) - 1) * 100 : null,
+          };
+        });
+        setInvsRaw(invList);
+
         const c = {};
         cfg.forEach((r) => { try { c[r.id] = JSON.parse(r.valueJSON); } catch (e) {} });
         const fam = { ...DEF_FAMILY, ...(c.family || {}) };
         const inf = c.inflation || BASE_INFL, tr = c.tiers || BASE_TIERS;
         let I2, G = c.groups || [];
         if (!cfg.length && !ex.length && !it.length) {
-          const s = seedInto([], [], fam, tr, inf); I2 = s.it; G = s.gr; setAssets(BASE_ASSETS);
+          const s = seedInto([], [], fam, tr, inf); I2 = s.it; G = s.gr; setAssets(BASE_ASSETS.map(normA));
         } else {
           I2 = it.filter((r) => r.id && r.tier).length ? it.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), value: parseAmount(r.value), startAge: parseAmount(r.startAge), endAge: parseAmount(r.endAge), every: parseAmount(r.every) || 1, isRecurring: bool(r.isRecurring), startAtRet: bool(r.startAtRet), endAtHorizon: bool(r.endAtHorizon), active: r.active === "" ? true : bool(r.active), anchor: r.anchor || "f", group: String(r.group || ""), parentLine: String(r.parentLine || "") })) : migrate(ex.filter((r) => r.id), it.filter((r) => r.id), fam);
-          setAssets(as.filter((r) => r.id).map((r) => ({ ...r, id: String(r.id), allocated: parseAmount(r.allocated), roi: parseAmount(r.roi), startYear: parseAmount(r.startYear), startMonth: parseAmount(r.startMonth) || 1, targets: String(r.targets || "").split(",").filter(Boolean) })));
+          setAssets(as.filter((r) => r.id).flatMap((r) => {
+            let L = []; try { L = JSON.parse(r.linkedJSON); } catch (e) {}
+            if (!r.investmentId && Array.isArray(L) && L.length) {
+              return L.map(String).map((iid) => { const iv = invList.find((x) => x.id === iid); return normA({ ...r, id: `${r.id}_${iid}`, investmentId: iid, name: iv?.name, allocatedINR: iv ? iv.invested * (iv.ccy === "USD" ? rate : 1) : 0 }); });
+            }
+            return [normA(r)];
+          }));
         }
         I2.forEach((x) => { if (!G.some((g) => g.tier === x.tier && g.name === x.group)) G.push({ tier: x.tier, name: x.group }); });
-        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setInflows(c.inflows || []); setActualCorpus(c.actualCorpus || {});
+        setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setActualCorpus(c.actualCorpus || {});
         setActuals(ac.filter((x) => x.itemId).map((x) => ({ id: String(x.id), itemId: String(x.itemId), year: parseAmount(x.year), amount: parseAmount(x.amount) })));
         setLoaded(true); setStatus("Loaded from Google Sheet");
       } catch (e) { setStatus("⚠ Could not load: " + e.message); }
@@ -114,8 +202,9 @@ export default function RetirementPage() {
     if (!loaded) return;
     const t = setTimeout(async () => {
       const tables = {
-        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "inflows", "actualCorpus"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, inflows, actualCorpus][i]) })),
-        [TAB.exp]: [], [TAB.act]: actuals, [TAB.itm]: items, [TAB.ast]: assets.map((a) => ({ ...a, targets: a.targets.join(",") })),
+        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "actualCorpus"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, actualCorpus][i]) })),
+        [TAB.exp]: [], [TAB.act]: actuals, [TAB.itm]: items,
+        [TAB.ast]: assetsRaw.map((a) => ({ id: a.id, name: a.name, investmentId: a.investmentId, allocatedINR: a.allocatedINR, roi: a.roi, startYear: a.startYear, startMonth: a.startMonth, targets: a.targets.join(","), pctJSON: JSON.stringify(a.pct || {}) })),
       };
       try {
         setStatus("Saving…");
@@ -129,18 +218,43 @@ export default function RetirementPage() {
       } catch (e) { setStatus("⚠ Save failed: " + e.message); }
     }, 1500);
     return () => clearTimeout(t);
-  }, [loaded, family, infl, tiers, groups, items, assets, inflows, actuals, actualCorpus]);
+  }, [loaded, family, infl, tiers, groups, items, assetsRaw, actuals, actualCorpus]);
 
   const ages = { f: ageOf(family.fDob), m: ageOf(family.mDob), k1: ageOf(family.k1Dob), k2: ageOf(family.k2Dob) };
   const people = [["f", family.fName], ["m", family.mName], ["k1", family.k1Name], ["k2", family.k2Name]];
   const annual = (x) => (x.unit === "/ month" ? x.value * 12 : x.value);
-  const totalL = assets.reduce((s, a) => s + a.allocated, 0);
-  const wroi = totalL ? assets.reduce((s, a) => s + a.allocated * a.roi, 0) / totalL : 0;
+  const todayS = todayStr();
   const curY = now.getFullYear();
   const psY = family.planStartYear || curY;
-  const base = ages.f - Math.max(0, curY - psY); // father's age in the plan's first year
+  const base = ages.f - Math.max(0, curY - psY);
   const fo = (family.ledgerFromToday ? base : Math.max(+family.retAge || ages.f, ages.f)) - base;
   const yoOf = (y) => (y > 0 ? Math.max(0, y - psY) : 0);
+
+  const invById = useMemo(() => Object.fromEntries(invsRaw.map((i) => {
+    const k = i.ccy === "USD" ? rate : 1;
+    return [i.id, { ...i, investedINR: i.invested * k, currentINR: i.current * k, closingINR: i.closing * k, ended: !!i.endDate && i.endDate < todayS }];
+  })), [invsRaw, rate]);
+
+  const allAssets = useMemo(() => assetsRaw.map((a) => {
+    if (!a.investmentId) return { ...a, manual: true, include: true, ended: false, allocated: a.allocatedINR / 1e5, currentINR: a.allocatedINR, actual: null };
+    const inv = invById[a.investmentId];
+    if (!inv) return null;
+    const share = inv.investedINR ? Math.min(1, a.allocatedINR / inv.investedINR) : 0;
+    const currentINR = share * (inv.ended ? inv.closingINR : inv.currentINR);
+    return { ...a, name: inv.name, inv, share, include: inv.forRetirement, ended: inv.ended, currentINR, allocated: currentINR / 1e5, actual: inv.actual, endYear: inv.endDate ? +inv.endDate.slice(0, 4) : 0, reinvested: !!inv.reinvestedInto };
+  }).filter(Boolean), [assetsRaw, invById]);
+
+  const assets = useMemo(() => allAssets.filter((a) => a.manual || (a.include && !a.ended)), [allAssets]);
+
+  const totalL = assets.reduce((s, a) => s + a.allocated, 0);
+  const wroi = totalL ? assets.reduce((s, a) => s + a.allocated * a.roi, 0) / totalL : 0;
+  const actW = assets.filter((a) => a.actual != null).reduce((s, a) => s + a.allocated, 0);
+  const wActual = actW ? assets.filter((a) => a.actual != null).reduce((s, a) => s + a.allocated * a.actual, 0) / actW : null;
+  const totalPrincipal = assets.reduce((s, a) => s + a.allocatedINR, 0);
+  const flaggedInvs = Object.values(invById).filter((i) => i.forRetirement);
+  const unallocByInv = (inv) => Math.max(0, inv.investedINR - allAssets.filter((a) => a.investmentId === inv.id).reduce((s, a) => s + a.allocatedINR, 0));
+  const totalUnalloc = flaggedInvs.filter((i) => !i.ended).reduce((s, i) => s + unallocByInv(i), 0);
+
   const actMap = useMemo(() => { const m = {}; actuals.forEach((a) => (m[`${a.itemId}|${a.year}`] = a.amount)); return m; }, [actuals]);
   const plannedOf = (x, f) => {
     if (!x.active) return 0;
@@ -156,12 +270,18 @@ export default function RetirementPage() {
     const max = +family.horizonAge || 90, rd = wroi / 100, first = base + fo;
     let cap = 0, capP = 0;
     const joins = {};
-    const place = (amt, yo, month, roi, isAsset, dated) => {
-      if (yo < fo) { const v = amt * (isAsset ? grow(roi, yo) : 1); cap += v; capP += v; }
+    const place = (amt, yo, month, roi, dated) => {
+      if (yo < fo) { const v = amt * grow(roi, yo); cap += v; capP += v; }
       else (joins[yo] = joins[yo] || []).push({ amt, frac: dated ? (13 - (month || 1)) / 12 : 1 });
     };
-    assets.forEach((a) => place(a.allocated * 1e5, yoOf(a.startYear), a.startMonth, a.roi, true, a.startYear > 0));
-    inflows.forEach((x) => place((x.amount || 0) * 1e5, yoOf(x.year), x.month, 0, false, true));
+    assets.forEach((a) => place(a.allocated * 1e5, yoOf(a.startYear), a.startMonth, a.roi, a.startYear > 0));
+    assets.forEach((a) => {
+      if (!a.reinvested || !a.endYear) return;
+      const yo = yoOf(a.endYear);
+      if (yo < fo) return;
+      const years = Math.max(0, yo - Math.max(yoOf(a.startYear), fo));
+      (joins[yo] = joins[yo] || []).push({ amt: -(a.allocated * 1e5 * Math.pow(1 + a.roi / 100, years)), frac: 1 });
+    });
     const rateAt = (ro) => {
       const act = assets.filter((a) => yoOf(a.startYear) <= ro), L = act.reduce((t, a) => t + a.allocated, 0);
       return L ? act.reduce((t, a) => t + a.allocated * a.roi, 0) / L / 100 : rd;
@@ -187,16 +307,17 @@ export default function RetirementPage() {
       cap = end; capP = endP;
     }
     return { rows, tierNpv, gNpv, gTot };
-  }, [family, assets, inflows, items, infl, tiers, wroi, actMap]);
+  }, [family, assets, items, infl, tiers, wroi, actMap]);
 
   const alloc = useMemo(() => {
     const m = {}; tierKeys.forEach((k) => (m[k] = 0));
     const dc = (yo) => 1 / Math.pow(1 + wroi / 100, Math.max(0, yo - fo));
-    const spread = (v, targets) => targets.forEach((k) => { if (m[k] !== undefined) m[k] += v / targets.length; });
-    assets.forEach((a) => { const yo = yoOf(a.startYear); spread(a.allocated * 1e5 * (yo < fo ? grow(a.roi, yo) : dc(yo)), a.targets); });
-    inflows.forEach((x) => spread((x.amount || 0) * 1e5 * dc(yoOf(x.year)), x.targets || []));
+    assets.forEach((a) => {
+      const yo = yoOf(a.startYear), v = a.allocated * 1e5 * (yo < fo ? grow(a.roi, yo) : dc(yo));
+      Object.entries(a.pct || {}).forEach(([k, p]) => { if (m[k] !== undefined) m[k] += (v * p) / 100; });
+    });
     return m;
-  }, [assets, inflows, tiers, family, wroi]);
+  }, [assets, tiers, family, wroi]);
 
   const alerts = useMemo(() => {
     const m = {};
@@ -215,17 +336,20 @@ export default function RetirementPage() {
     const good = [], warn = [], info = [], rows = calc.rows, last = rows[rows.length - 1];
     tierKeys.forEach((k) => {
       const need = calc.tierNpv[k] || 0, have = alloc[k] || 0;
-      if (need > 0 && have < need) warn.push({ t: `${k}: underfunded by ${fmtI(need - have)}`, d: `Assigned capital covers ${Math.round((have / need) * 100)}% of what ${k} needs. Point more assets or corpus additions at ${k}, push some costs later, or trim its largest group.` });
+      if (need > 0 && have < need) warn.push({ t: `${k}: underfunded by ${fmtI(need - have)}`, d: `Assigned capital covers ${Math.round((have / need) * 100)}% of what ${k} needs. Raise the ${k} % on some allocations, add capital, push some costs later, or trim its largest group.` });
       else if (need > 0) good.push({ t: `${k}: fully funded`, d: `${fmtI(need)} needed, ${fmtI(have - need)} to spare.` });
     });
     const dry = rows.find((x) => x.end < 0);
-    if (dry) warn.push({ t: `Corpus runs out in ${dry.year} (age ${dry.f})`, d: "Options: delay retirement, add corpus amounts, raise savings, cut Lifestyle costs, or move big goals later." });
+    if (dry) warn.push({ t: `Corpus runs out in ${dry.year} (age ${dry.f})`, d: "Options: delay retirement, allocate more investments, raise savings, cut Lifestyle costs, or move big goals later." });
     else if (last) good.push({ t: `Corpus lasts beyond age ${last.f}`, d: `Projected balance at the end: ${fmtI(last.end)}.` });
     const real = wroi - (infl.core || 0);
-    if (totalL && real < 2) warn.push({ t: `Real return is only ${real.toFixed(1)}%`, d: `Yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%. Review asset mix or inflation assumptions.` });
-    else if (totalL) good.push({ t: `Real return ${real.toFixed(1)}% above inflation`, d: `Portfolio yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%.` });
+    if (totalL && real < 2) warn.push({ t: `Real return is only ${real.toFixed(1)}%`, d: `Planning yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%. Review asset mix or inflation assumptions.` });
+    else if (totalL) good.push({ t: `Real return ${real.toFixed(1)}% above inflation`, d: `Planning yield ${wroi.toFixed(1)}% vs core inflation ${infl.core}%.` });
     const unalloc = assets.filter((a) => !a.targets.length);
-    if (unalloc.length) warn.push({ t: `${unalloc.length} asset(s) fund no tier`, d: `${unalloc.map((a) => a.name).join(", ")} count in the runway but not in tier funding. Tick the tiers they fund.` });
+    if (unalloc.length) warn.push({ t: `${unalloc.length} allocation(s) fund no tier`, d: `${unalloc.map((a) => a.name).join(", ")} count in the runway but not in tier funding. Set a % for the tiers they fund.` });
+    const badPct = assets.filter((a) => a.targets.length && Math.abs(pctTotal(a.pct) - 100) >= 0.05);
+    if (badPct.length) warn.push({ t: `${badPct.length} allocation(s) don't total 100% across tiers`, d: `${badPct.map((a) => a.name).join(", ")} — tier percentages should total 100.` });
+    if (totalUnalloc > 1) warn.push({ t: `${fmtI(totalUnalloc)} of retirement-flagged investments is not allocated`, d: "Open Capital Portfolios and allocate it, or untick 'Use for retirement' on the investment." });
     const big = assets.find((a) => totalL && a.allocated / totalL > 0.5);
     if (big) info.push({ t: `${big.name} is ${Math.round((big.allocated / totalL) * 100)}% of capital`, d: "Heavy concentration in one asset; consider spreading risk." });
     const gs = Object.entries(calc.gNpv).sort((a, b) => b[1] - a[1]), tot = gs.reduce((t, g) => t + g[1], 0);
@@ -239,10 +363,10 @@ export default function RetirementPage() {
       else warn.push({ t: `Overspent plan by ${fmtI(-v)} so far`, d: worst && worst[1] > 0 ? `Largest overspend: ${worst[0]} (${fmtI(worst[1])}). Adjust that budget or the plan.` : "Review the Year Review tab." });
     }
     const ky = Object.keys(actualCorpus).map(Number).filter((y) => rows.some((x) => x.year === y)).sort().pop();
-    if (ky) { const gap = actualCorpus[ky] - rows.find((x) => x.year === ky).endP; (gap >= 0 ? good : warn).push({ t: `Savings ${gap >= 0 ? "ahead of" : "behind"} target by ${fmtI(Math.abs(gap))} (${ky})`, d: gap >= 0 ? "Keep the current pace." : "Add a corpus amount or raise monthly investing to catch up." }); }
+    if (ky) { const gap = actualCorpus[ky] - rows.find((x) => x.year === ky).endP; (gap >= 0 ? good : warn).push({ t: `Savings ${gap >= 0 ? "ahead of" : "behind"} target by ${fmtI(Math.abs(gap))} (${ky})`, d: gap >= 0 ? "Keep the current pace." : "Allocate more investments or raise monthly investing to catch up." }); }
     if (alerts.length) info.push({ t: `${alerts.length} big cost(s) due within 2 years`, d: alerts.slice(0, 3).map((a) => `${a.n} ${fmtI(a.v)} (${a.y})`).join("; ") + ". Keep this money liquid." });
     return { good, warn, info };
-  }, [calc, alloc, assets, actuals, actualCorpus, alerts, items, infl, wroi]);
+  }, [calc, alloc, assets, actuals, actualCorpus, alerts, items, infl, wroi, totalUnalloc]);
 
   const upd = (id, patch) => setItems((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const updA = (id, patch) => setAssets((l) => l.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -274,12 +398,17 @@ export default function RetirementPage() {
   const delTier = (k) => {
     if (!window.confirm("Delete this tier with its groups and items?")) return;
     setItems((l) => l.filter((x) => x.tier !== k)); setGroups((l) => l.filter((g) => g.tier !== k));
-    setAssets((l) => l.map((a) => ({ ...a, targets: a.targets.filter((t) => t !== k) })));
+    setAssets((l) => l.map((a) => { const pct = { ...a.pct }; delete pct[k]; return { ...a, ...pctPatch(pct) }; }));
     setTiers((t) => { const n = { ...t }; delete n[k]; return n; });
   };
   const restore = () => { const s = seedInto(items, groups, family, tiers, infl); setItems(s.it); setGroups(s.gr); };
   const addInfl = () => { const k = (prompt("Name for the new inflation track:") || "").trim(); if (k && infl[k] === undefined) setInfl((i) => ({ ...i, [k]: 7 })); };
   const delInfl = (k) => { setInfl((i) => { const n = { ...i }; delete n[k]; return n; }); setItems((l) => l.map((x) => (x.infType === k ? { ...x, infType: "core" } : x))); };
+
+  const allocate = (inv, amount) => setAssets((l) => [...l, {
+    id: nid("a"), name: inv.name, investmentId: inv.id, allocatedINR: Math.round(amount),
+    roi: inv.actual > 0 ? +inv.actual.toFixed(1) : 8, startYear: +(inv.purchaseDate || "").slice(0, 4) || 0, startMonth: +(inv.purchaseDate || "").slice(5, 7) || 1, targets: [], pct: {},
+  }]);
 
   const tabs = [["setup", "Family & Inflation"], ["items", "Itemized Costs"], ["tiers", "Tier Summary"], ["assets", "Capital Portfolios"], ["yearly", "Yearly Expenses"], ["review", "Year Review"], ["tips", "Suggestions"], ["ledger", "Cash Runway"]];
   const inflOpts = Object.keys(infl).map((k) => [k, k]);
@@ -435,50 +564,237 @@ export default function RetirementPage() {
         </>
       )}
 
-      {tab === "assets" && (
-        <Card style={{ overflowX: "auto" }}>
-          <Chk v={family.ledgerFromToday} on={setF("ledgerFromToday")} label="Corpus funds all dated expenses from today (ledger starts today)" />
-          <Chk v={family.growToRet} on={setF("growToRet")} label="Capital keeps compounding until retirement (only when the ledger starts at retirement)" />
-          <div style={{ margin: "8px 0" }}><button style={btnStyle} onClick={() => setAssets((l) => [...l, { id: nid("a"), name: "New asset", allocated: 50, roi: 8.5, startYear: 0, startMonth: 1, targets: [] }])}>+ Add asset</button></div>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead><tr>{["Asset", "Principal (Lakhs)", "Growth %", "Available from", "Funds which tiers", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
-            <tbody>
-              {assets.map((a) => (
-                <tr key={a.id}>
-                  <td style={cell}><I t="text" w="100%" v={a.name} on={(v) => updA(a.id, { name: v })} /></td>
-                  <td style={cell}><I w={90} v={a.allocated} on={(v) => updA(a.id, { allocated: v })} /><div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI(a.allocated * 1e5)}</div></td>
-                  <td style={cell}><I w={60} v={a.roi} on={(v) => updA(a.id, { roi: v })} step="0.1" /></td>
-                  <td style={cell}><I t="month" w={140} v={a.startYear ? `${a.startYear}-${String(a.startMonth || 1).padStart(2, "0")}` : ""} on={(v) => { const m = /^(\d{4})-(\d{2})/.exec(v); updA(a.id, m ? { startYear: +m[1], startMonth: +m[2] } : { startYear: 0, startMonth: 1 }); }} /><div style={{ fontSize: 10, color: COLORS.muted }}>{a.startYear ? "compounds from this month" : "blank = available today"}</div></td>
-                  <td style={cell}>{tierKeys.map((k) => <Chk key={k} v={a.targets.includes(k)} label={k} on={(c) => updA(a.id, { targets: c ? [...a.targets, k] : a.targets.filter((x) => x !== k) })} />)}</td>
-                  <td style={cell}><Del on={() => setAssets((l) => l.filter((x) => x.id !== a.id))} /></td>
-                </tr>
+      {tab === "assets" && (() => {
+        const retAge = +family.retAge || ages.f;
+        const atRet = (a) => a.currentINR * Math.pow(1 + a.roi / 100, Math.max(0, retAge - ages.f));
+        const activeInvs = flaggedInvs.filter((i) => !i.ended).sort((a, b) => a.name.localeCompare(b.name));
+        const endedInvs = flaggedInvs.filter((i) => i.ended).sort((a, b) => a.name.localeCompare(b.name));
+        const manual = allAssets.filter((a) => a.manual);
+        const amounts = (inv) => (
+          <div>Invested : {inv.ccy === "USD" ? `${fmt(inv.invested, "USD")} (≈${fmtI(inv.investedINR)})` : fmtI(inv.investedINR)}</div>
+        );
+        const sum = [
+          ["Total allocated for retirement", fmtI(totalPrincipal)],
+          ["Current est. value", fmtI(totalL * 1e5)],
+          ["Avg. growth (planning)", `${wroi.toFixed(2)}%`],
+          ["Avg. actual return", wActual == null ? "—" : `${wActual.toFixed(2)}%`],
+          ["Not yet allocated", fmtI(totalUnalloc)],
+        ];
+        return (
+          <Card style={{ overflowX: "auto" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 1, background: COLORS.ink, marginBottom: 12 }}>
+              {sum.map(([l, v]) => (
+                <div key={l} style={{ background: COLORS.bg, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: COLORS.muted }}>{l}</div>
+                  <div style={{ fontSize: 18, marginTop: 4, color: l === "Not yet allocated" && totalUnalloc > 1 ? COLORS.negative : COLORS.ink }}>{v}</div>
+                </div>
               ))}
-            </tbody>
-          </table>
-          <div style={{ margin: "22px 0 8px", display: "flex", gap: 10, alignItems: "center" }}>
-            <b style={{ fontSize: 13 }}>One-time corpus additions</b>
-            <button style={btnStyle} onClick={() => setInflows((l) => [...l, { id: nid("c"), name: "New addition", amount: 10, year: curY + 1, month: 1, targets: [] }])}>+ Add corpus amount</button>
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead><tr>{["Source", "Amount (Lakhs)", "Received in", "Funds which tiers", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
-            <tbody>
-              {inflows.map((x) => {
-                const up = (patch) => setInflows((l) => l.map((y) => (y.id === x.id ? { ...y, ...patch } : y)));
-                return (
-                  <tr key={x.id}>
-                    <td style={cell}><I t="text" w="100%" v={x.name} on={(v) => up({ name: v })} /></td>
-                    <td style={cell}><I w={90} v={x.amount} on={(v) => up({ amount: v })} /><div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI((x.amount || 0) * 1e5)}</div></td>
-                    <td style={cell}><I t="month" w={140} v={`${x.year}-${String(x.month || 1).padStart(2, "0")}`} on={(v) => { const m = /^(\d{4})-(\d{2})/.exec(v); if (m) up({ year: +m[1], month: +m[2] }); }} /></td>
-                    <td style={cell}>{tierKeys.map((k) => <Chk key={k} v={(x.targets || []).includes(k)} label={k} on={(c) => up({ targets: c ? [...(x.targets || []), k] : (x.targets || []).filter((t) => t !== k) })} />)}</td>
-                    <td style={cell}><Del on={() => setInflows((l) => l.filter((y) => y.id !== x.id))} /></td>
-                  </tr>
-                );
-              })}
-              {!inflows.length && <tr><td colSpan={5} style={{ ...cell, color: COLORS.muted }}>None. Use this for bonuses, a property sale, maturities, inheritance, etc.</td></tr>}
-            </tbody>
-          </table>
-        </Card>
-      )}
+            </div>
+            <Chk v={family.ledgerFromToday} on={setF("ledgerFromToday")} label="Corpus funds all dated expenses from today (ledger starts today)" />
+            <Chk v={family.growToRet} on={setF("growToRet")} label="Capital keeps compounding until retirement (only when the ledger starts at retirement)" />
+            <div style={{ fontSize: 11, color: COLORS.muted, margin: "6px 0" }}>Investments appear here when "Use for retirement" is ticked on the Investments page. Amounts in INR (USD at ₹{rate}). The projection starts from each slice's current estimated value, using the planning growth %.</div>
+
+            <div style={banner}>ACTIVE</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
+              <thead><tr>{["Asset", "Principal", "Growth % (planning)", "Available from", "Available till", "Funds tiers (% each)", "Current est. value", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+              <tbody>
+                {activeInvs.map((inv) => {
+                  const rows = allAssets.filter((a) => a.investmentId === inv.id), un = unallocByInv(inv);
+                  if (!rows.length) return (
+                    <tr key={inv.id}>
+                      <td style={cell}>{inv.name}</td>
+                      <td style={cell}>{amounts(inv)}<div>Allocated :</div></td>
+                      <td style={cell} colSpan={3}></td>
+                      <td style={{ ...cell, color: COLORS.negative }}>Not allocated, <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => allocate(inv, inv.investedINR)}>edit to change</a></td>
+                      <td style={cell}></td><td style={cell}></td>
+                    </tr>
+                  );
+                  return rows.map((a, i) => (
+                    <tr key={a.id}>
+                      <td style={cell}>{i === 0 ? inv.name : <span style={{ color: COLORS.muted }}>↳ split</span>}
+                        {i === rows.length - 1 && <div><Del on={() => allocate(inv, un)}>+ Split</Del>{un > 1 && <span style={{ fontSize: 10, color: COLORS.negative }}> · {fmtI(un)} unallocated</span>}</div>}
+                      </td>
+                      <td style={cell}>
+                        {i === 0 && amounts(inv)}
+                        <div style={{ whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                          Allocated : 
+                          <input 
+                            type="number" 
+                            value={a.allocatedINR ?? ""} 
+                            onChange={(e) => updA(a.id, { allocatedINR: e.target.value === "" ? 0 : +e.target.value })} 
+                            style={{ 
+                              width: "90px", 
+                              border: "none", 
+                              borderBottom: "1px dashed #ced4da", 
+                              background: "transparent", 
+                              fontSize: 11, 
+                              padding: "1px 0",
+                              outline: "none" 
+                            }} 
+                          />
+                        </div>
+                        <div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI(a.allocatedINR)}</div>
+                      </td>
+                      <td style={cell}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                          <input 
+                            type="number" 
+                            step="0.1" 
+                            value={a.roi ?? ""} 
+                            onChange={(e) => updA(a.id, { roi: e.target.value === "" ? 0 : +e.target.value })} 
+                            style={{ 
+                              width: "40px", 
+                              border: "none", 
+                              borderBottom: "1px dashed #ced4da", 
+                              background: "transparent", 
+                              textAlign: "right", 
+                              fontSize: 11, 
+                              padding: "1px 0",
+                              outline: "none" 
+                            }} 
+                          />%
+                        </div>
+                        <div style={{ fontSize: 10, color: COLORS.muted }}>actual : {a.actual != null ? `${a.actual.toFixed(1)}%` : "—"}</div>
+                      </td>
+                      <td style={cell}>
+                        <input 
+                          type="month" 
+                          value={a.startYear ? `${a.startYear}-${String(a.startMonth || 1).padStart(2, "0")}` : ""} 
+                          onChange={(e) => { 
+                            const m = /^(\d{4})-(\d{2})/.exec(e.target.value); 
+                            updA(a.id, m ? { startYear: +m[1], startMonth: +m[2] } : { startYear: 0, startMonth: 1 }); 
+                          }} 
+                          style={{ 
+                            width: "120px", 
+                            border: "none", 
+                            borderBottom: "1px dashed #ced4da", 
+                            background: "transparent", 
+                            fontSize: 11, 
+                            padding: "1px 0",
+                            outline: "none" 
+                          }} 
+                        />
+                      </td>
+                      <td style={cell}>{ym(inv.endDate)}</td>
+                      <td style={cell}><PctEditor tierKeys={tierKeys} pct={a.pct} onChange={(p) => updA(a.id, pctPatch(p))} /></td>
+                      <td style={cell}><b>{fmtI(a.currentINR)}</b><div style={{ fontSize: 10, color: COLORS.muted }}>at retirement ≈ {fmtI(atRet(a))}</div></td>
+                      <td style={cell}><Del on={() => setAssets((l) => l.filter((x) => x.id !== a.id))} /></td>
+                    </tr>
+                  ));
+                })}
+                {!activeInvs.length && <tr><td colSpan={8} style={{ ...cell, color: COLORS.muted }}>No active investments flagged for retirement.</td></tr>}
+              </tbody>
+            </table>
+
+            <div style={{ margin: "14px 0 6px", display: "flex", gap: 10, alignItems: "center" }}>
+              <b style={{ fontSize: 13 }}>Manual assets (PF, cash, etc.)</b>
+              <button style={btnStyle} onClick={() => setAssets((l) => [...l, { id: nid("a"), name: "New asset", investmentId: "", allocatedINR: 5e6, roi: 7, startYear: 0, startMonth: 1, targets: [], pct: {} }])}>+ Add manual asset</button>
+            </div>
+            {manual.length > 0 && (
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
+                <thead><tr>{["Asset", "Principal (₹)", "Growth % (planning)", "Available from", "Funds tiers (% each)", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {manual.map((a) => (
+                    <tr key={a.id}>
+                      <td style={cell}><I t="text" w="100%" v={a.name} on={(v) => updA(a.id, { name: v })} /></td>
+                      <td style={cell}>
+                        <input 
+                          type="number" 
+                          value={a.allocatedINR ?? ""} 
+                          onChange={(e) => updA(a.id, { allocatedINR: e.target.value === "" ? 0 : +e.target.value })} 
+                          style={{ 
+                            width: "90px", 
+                            border: "none", 
+                            borderBottom: "1px dashed #ced4da", 
+                            background: "transparent", 
+                            fontSize: 11, 
+                            padding: "1px 0",
+                            outline: "none" 
+                          }} 
+                        />
+                        <div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI(a.allocatedINR)}</div>
+                      </td>
+                      <td style={cell}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                          <input 
+                            type="number" 
+                            step="0.1" 
+                            value={a.roi ?? ""} 
+                            onChange={(e) => updA(a.id, { roi: e.target.value === "" ? 0 : +e.target.value })} 
+                            style={{ 
+                              width: "40px", 
+                              border: "none", 
+                              borderBottom: "1px dashed #ced4da", 
+                              background: "transparent", 
+                              textAlign: "right", 
+                              fontSize: 11, 
+                              padding: "1px 0",
+                              outline: "none" 
+                            }} 
+                          />%
+                        </div>
+                      </td>
+                      <td style={cell}>
+                        <input 
+                          type="month" 
+                          value={a.startYear ? `${a.startYear}-${String(a.startMonth || 1).padStart(2, "0")}` : ""} 
+                          onChange={(e) => { 
+                            const m = /^(\d{4})-(\d{2})/.exec(e.target.value); 
+                            updA(a.id, m ? { startYear: +m[1], startMonth: +m[2] } : { startYear: 0, startMonth: 1 }); 
+                          }} 
+                          style={{ 
+                            width: "120px", 
+                            border: "none", 
+                            borderBottom: "1px dashed #ced4da", 
+                            background: "transparent", 
+                            fontSize: 11, 
+                            padding: "1px 0",
+                            outline: "none" 
+                          }} 
+                        />
+                        <div style={{ fontSize: 10, color: COLORS.muted }}>blank = available today</div>
+                      </td>
+                      <td style={cell}><PctEditor tierKeys={tierKeys} pct={a.pct} onChange={(p) => updA(a.id, pctPatch(p))} /></td>
+                      <td style={cell}><Del on={() => setAssets((l) => l.filter((x) => x.id !== a.id))} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <div style={banner}>INACTIVE</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
+              <thead><tr>{["Asset", "Invested / Allocated", "Total contributed", "Available from", "Available till", "Funds tiers (% each)", "Re-invested", "Amount at closing"].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+              <tbody>
+                {endedInvs.map((inv) => {
+                  const rows = allAssets.filter((a) => a.investmentId === inv.id);
+                  const reinv = inv.reinvestedInto ? `Yes (${inv.reinvestedInto})` : "No";
+                  if (!rows.length) return (
+                    <tr key={inv.id}>
+                      <td style={cell}>{inv.name}</td><td style={cell}>{amounts(inv)}</td><td style={cell}>—</td><td style={cell}>{ym(inv.purchaseDate)}</td><td style={cell}>{ym(inv.endDate)}</td>
+                      <td style={cell}>Not allocated</td><td style={cell}>{reinv}</td><td style={cell}>{fmtI(inv.closingINR)}</td>
+                    </tr>
+                  );
+                  return rows.map((a, i) => (
+                    <tr key={a.id}>
+                      <td style={cell}>{inv.name}</td>
+                      <td style={cell}>{i === 0 && amounts(inv)}<div>Allocated : {fmtI(a.allocatedINR)}</div></td>
+                      <td style={cell}>{fmtI(a.allocatedINR)}</td>
+                      <td style={cell}>{a.startYear ? `${a.startYear}-${String(a.startMonth || 1).padStart(2, "0")}` : ym(inv.purchaseDate)}</td>
+                      <td style={cell}>{ym(inv.endDate)}</td>
+                      <td style={cell}>{pctText(a.pct)}</td>
+                      <td style={cell}>{reinv}</td>
+                      <td style={cell}>{fmtI(a.currentINR)}</td>
+                    </tr>
+                  ));
+                })}
+                {!endedInvs.length && <tr><td colSpan={8} style={{ ...cell, color: COLORS.muted }}>No ended investments flagged for retirement.</td></tr>}
+              </tbody>
+            </table>
+            <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 8 }}>Ended holdings drop out of the projection. If one was reinvested, allocate the new investment and it takes over from its own start date; a still-running reinvested holding leaves the pool on its end date. If an ended holding wasn't reinvested, add its closing amount as a manual asset.</div>
+          </Card>
+        );
+      })()}
 
       {tab === "yearly" && (() => {
         const yrs = [...new Set(calc.rows.map((x) => x.year))], yy = yrs.includes(ySel) ? ySel : yrs[0];
@@ -571,7 +887,7 @@ export default function RetirementPage() {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead><tr>
               <th style={head}>Year</th>{[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
-              <th style={head}>Start balance</th><th style={head}>Added</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
+              <th style={head}>Start balance</th><th style={head}>Added / (removed)</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
             </tr></thead>
             <tbody>
               {calc.rows.map((r) => (
