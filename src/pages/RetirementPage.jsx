@@ -32,7 +32,6 @@ const pctText = (p) => Object.entries(p || {}).filter(([, v]) => v > 0).map(([k,
 const yrsSince = (d) => (Date.now() - new Date(d).getTime()) / 31557600000;
 
 // An allocation = a slice of one investment (investmentId set) or a manual asset (investmentId empty).
-// Amounts are stored in rupees (allocatedINR). Older rows stored Lakhs in `allocated`.
 const normA = (r) => {
   const targets = Array.isArray(r.targets) ? r.targets : String(r.targets || "").split(",").filter(Boolean);
   let pct = {}; try { pct = JSON.parse(r.pctJSON); } catch (e) {}
@@ -289,25 +288,34 @@ export default function RetirementPage() {
     const rows = [], tierNpv = {}, gNpv = {}, gTot = {};
     tierKeys.forEach((k) => (tierNpv[k] = 0));
     for (let f = first, idx = 0; f <= max; f++, idx++) {
-      const off = f - base, yr = psY + off, out = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
-      let plan = 0;
-      tierKeys.forEach((k) => (out[k] = 0));
+      const off = f - base, yr = psY + off, out = {}, outAct = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
+      let plan = 0, total = 0, totalActual = 0;
+      tierKeys.forEach((k) => { out[k] = 0; outAct[k] = 0; });
       items.forEach((x) => {
         if (out[x.tier] === undefined) return;
         const pv = plannedOf(x, f), a = actMap[`${x.id}|${yr}`], v = a !== undefined ? a : pv, key = gk(x.tier, x.group);
         plan += pv;
-        if (!v) return;
-        out[x.tier] += v; tierNpv[x.tier] += v / disc; gNpv[key] = (gNpv[key] || 0) + v / disc; gTot[key] = (gTot[key] || 0) + v;
+        total += pv;
+        totalActual += v;
+        out[x.tier] += pv;
+        outAct[x.tier] += v;
+        if (v) {
+          tierNpv[x.tier] += v / disc; 
+          gNpv[key] = (gNpv[key] || 0) + v / disc; 
+          gTot[key] = (gTot[key] || 0) + v;
+        }
       });
-      const total = Object.values(out).reduce((a, b) => a + b, 0), addSum = adds.reduce((t, a) => t + a.amt, 0);
+      const addSum = adds.reduce((t, a) => t + a.amt, 0);
       const growAdj = adds.reduce((t, a) => t + a.amt * ((1 + r) - Math.pow(1 + r, a.frac)), 0);
+      
+      const outlay = (yr <= curY && Object.keys(actMap).length > 0) ? totalActual : total;
       const fin = (c, t) => { const after = c + addSum - t; return after > 0 ? after * (1 + r) - growAdj : after; };
-      const end = fin(cap, total), endP = fin(capP, plan);
-      rows.push({ f, year: yr, m: ages.m + (f - ages.f), k1: ages.k1 + (f - ages.f), k2: ages.k2 + (f - ages.f), start: cap, added: addSum, out, total, plan, end, endP });
+      const end = fin(cap, outlay), endP = fin(capP, plan);
+      rows.push({ f, year: yr, m: ages.m + (f - ages.f), k1: ages.k1 + (f - ages.f), k2: ages.k2 + (f - ages.f), start: cap, added: addSum, out, total, totalActual, plan, end, endP });
       cap = end; capP = endP;
     }
     return { rows, tierNpv, gNpv, gTot };
-  }, [family, assets, items, infl, tiers, wroi, actMap]);
+  }, [family, assets, items, infl, tiers, wroi, actMap, curY]);
 
   const alloc = useMemo(() => {
     const m = {}; tierKeys.forEach((k) => (m[k] = 0));
@@ -356,7 +364,7 @@ export default function RetirementPage() {
     if (gs.length && tot) info.push({ t: `Biggest need: ${gs[0][0].split("|")[1]} (${Math.round((gs[0][1] / tot) * 100)}% of total)`, d: `Next: ${gs.slice(1, 3).map((g) => g[0].split("|")[1]).join(", ")}. Trimming here moves the plan most.` });
     const past = rows.filter((x) => x.year <= curY && actuals.some((a) => a.year === x.year));
     if (past.length) {
-      const v = past.reduce((t, x) => t + (x.plan - x.total), 0), od = {};
+      const v = past.reduce((t, x) => t + (x.plan - x.totalActual), 0), od = {};
       actuals.filter((a) => a.year <= curY).forEach((a) => { const x = items.find((i) => i.id === a.itemId); if (!x) return; const k = x.group; od[k] = (od[k] || 0) + a.amount - plannedOf(x, base + (a.year - psY)); });
       const worst = Object.entries(od).sort((a, b) => b[1] - a[1])[0];
       if (v >= 0) good.push({ t: `Spending under plan by ${fmtI(v)} so far`, d: "Surplus is already reflected in the runway." });
@@ -800,7 +808,7 @@ export default function RetirementPage() {
         const yrs = [...new Set(calc.rows.map((x) => x.year))], yy = yrs.includes(ySel) ? ySel : yrs[0];
         const f = base + (yy - psY), row = calc.rows.find((x) => x.year === yy);
         const setActual = (itemId, val) => setActuals((l) => { const id = `${itemId}_${yy}`, rest = l.filter((x) => x.id !== id); return val === "" ? rest : [...rest, { id, itemId, year: yy, amount: +val }]; });
-        const list = items.filter((x) => (yTier === "all" || x.tier === yTier) && (yGroup === "all" || x.group === yGroup)).map((x) => ({ x, pv: plannedOf(x, f), a: actMap[`${x.id}|${yy}`] })).filter((o) => o.pv > 0 || o.a !== undefined);
+        const list = items.filter((x) => (yTier === "all" || x.tier === yTier) && (yGroup === "all" || x.group === yGroup)).map((x) => ({ x, pv: plannedOf(x, f), a: actMap[`${x.id}|${yy}`] }));
         const secs = {}; list.forEach((o) => { const k = gk(o.x.tier, o.x.group); (secs[k] = secs[k] || []).push(o); });
         const keys = Object.keys(secs).sort((a, b) => tierKeys.indexOf(a.split("|")[0]) - tierKeys.indexOf(b.split("|")[0]) || a.localeCompare(b));
         const eff = (o) => (o.a !== undefined ? o.a : o.pv), vc = (v) => (v >= 0 ? COLORS.positive : COLORS.negative);
@@ -812,7 +820,7 @@ export default function RetirementPage() {
                 <S v={yTier} opts={[["all", "All tiers"], ...tierKeys.map((k) => [k, k])]} on={(v) => { setYTier(v); setYGroup("all"); }} />
                 <S v={yGroup} opts={[["all", "All groups"], ...(yTier === "all" ? [...new Set(groups.map((g) => g.name))] : groupsOf(yTier)).map((g) => [g, g])]} on={setYGroup} w={220} />
               </div>
-              {row && <div style={{ fontSize: 13 }}>Planned <b>{fmtI(row.plan)}</b> · With actuals <b>{fmtI(row.total)}</b> · <b style={{ color: vc(row.plan - row.total) }}>{row.plan - row.total >= 0 ? "Surplus" : "Deficit"} {fmtI(Math.abs(row.plan - row.total))}</b> <span style={{ color: COLORS.muted, fontSize: 11 }}>(actuals you enter replace the plan in Cash Runway)</span></div>}
+              {row && <div style={{ fontSize: 13 }}>Planned <b>{fmtI(row.plan)}</b> · With actuals <b>{fmtI(row.totalActual)}</b> · <b style={{ color: vc(row.plan - row.totalActual) }}>{row.plan - row.totalActual >= 0 ? "Surplus" : "Deficit"} {fmtI(Math.abs(row.plan - row.totalActual))}</b> <span style={{ color: COLORS.muted, fontSize: 11 }}>(surplus/deficit automatically adjusts the corpus balance)</span></div>}
             </Card>
             <Card style={{ overflowX: "auto", padding: 0 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
@@ -827,7 +835,7 @@ export default function RetirementPage() {
                           <tr key={o.x.id}>
                             <td style={{ ...cell, paddingLeft: 18 }}>{o.x.name}</td>
                             <td style={cell}>{fmtI(o.pv)}</td>
-                            <td style={cell}><I w={110} v={o.a ?? ""} on={(v) => setActual(o.x.id, v === 0 && o.a === undefined ? "" : v)} placeholder="not entered" /> <Del on={() => setActual(o.x.id, String(Math.round(o.pv)))}>use plan</Del>{o.a !== undefined && <> · <Del on={() => setActual(o.x.id, "")}>clear</Del></>}</td>
+                            <td style={cell}><I w={110} v={o.a ?? ""} on={(v) => setActual(o.x.id, v === 0 && o.a === undefined ? "" : v)} placeholder="Type actual…" /> <Del on={() => setActual(o.x.id, String(Math.round(o.pv)))}>use plan</Del>{o.a !== undefined && <> · <Del on={() => setActual(o.x.id, "")}>clear</Del></>}</td>
                             <td style={{ ...cell, color: o.a !== undefined ? vc(o.pv - o.a) : COLORS.muted }}>{o.a !== undefined ? fmtI(o.pv - o.a) : "–"}</td>
                           </tr>
                         ))}
@@ -851,11 +859,11 @@ export default function RetirementPage() {
               <thead><tr>{["Year", "Planned spend", "Spend with actuals", "Surplus / Deficit", "Cumulative", "Target corpus (plan)", "Actual corpus (Lakhs)", "Ahead / Behind"].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
               <tbody>
                 {past.map((x) => {
-                  const v = x.plan - x.total; cum += v;
+                  const v = x.plan - x.totalActual; cum += v;
                   const ac = actualCorpus[x.year], gap = ac !== undefined ? ac - x.endP : null;
                   return (
                     <tr key={x.year}>
-                      <td style={cell}><b>{x.year}</b></td><td style={cell}>{fmtI(x.plan)}</td><td style={cell}>{fmtI(x.total)}</td>
+                      <td style={cell}><b>{x.year}</b></td><td style={cell}>{fmtI(x.plan)}</td><td style={cell}>{fmtI(x.totalActual)}</td>
                       <td style={{ ...cell, color: v >= 0 ? COLORS.positive : COLORS.negative }}>{fmtI(v)}</td>
                       <td style={{ ...cell, color: cum >= 0 ? COLORS.positive : COLORS.negative }}>{fmtI(cum)}</td>
                       <td style={cell}>{fmtI(x.endP)}</td>
@@ -887,14 +895,16 @@ export default function RetirementPage() {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead><tr>
               <th style={head}>Year</th>{[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
-              <th style={head}>Start balance</th><th style={head}>Added / (removed)</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Total outlay</th><th style={head}>End balance</th>
+              <th style={head}>Start balance</th><th style={head}>Added / (removed)</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Planned outlay</th><th style={head}>Actual outlay</th><th style={head}>End balance</th>
             </tr></thead>
             <tbody>
               {calc.rows.map((r) => (
                 <tr key={r.f}>
                   <td style={cell}>{r.year}</td><td style={cell}><b>{r.f}</b></td><td style={cell}>{r.m}</td><td style={cell}>{r.k1}</td><td style={cell}>{r.k2}</td>
                   <td style={cell}>{fmtI(r.start)}</td><td style={cell}>{r.added ? fmtI(r.added) : "–"}</td>{tierKeys.map((k) => <td key={k} style={cell}>{fmtI(r.out[k] || 0)}</td>)}
-                  <td style={{ ...cell, color: COLORS.negative }}>{fmtI(r.total)}</td><td style={{ ...cell, fontWeight: 700, color: r.end < 0 ? COLORS.negative : COLORS.positive }}>{fmtI(r.end)}</td>
+                  <td style={{ ...cell, color: COLORS.muted }}>{fmtI(r.total)}</td>
+                  <td style={{ ...cell, color: COLORS.negative }}>{fmtI(r.totalActual)}</td>
+                  <td style={{ ...cell, fontWeight: 700, color: r.end < 0 ? COLORS.negative : COLORS.positive }}>{fmtI(r.end)}</td>
                 </tr>
               ))}
             </tbody>
