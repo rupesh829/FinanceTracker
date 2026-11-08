@@ -136,6 +136,20 @@ function serializeDebt(debt) {
   return { ...rest, emiHistoryJSON: JSON.stringify(emiHistory || []), aprHistoryJSON: JSON.stringify(aprHistory || []) };
 }
 
+// Months and total interest to clear `bal` paying `pay` a month at `apr`% (simple monthly compounding).
+function simulatePayoff(bal, apr, pay) {
+  const r = apr / 1200;
+  let b = bal, months = 0, interest = 0;
+  if (b <= 0.5) return { months: 0, interest: 0 };
+  while (b > 0.5 && months < 1200) {
+    const i = b * r;
+    if (pay <= i || pay <= 0) return { months: Infinity, interest: Infinity };
+    const p = Math.min(pay, b + i);
+    interest += i; b = b + i - p; months++;
+  }
+  return { months, interest };
+}
+
 export default function DebtsPage() {
   const { rate } = useRate();
   const [debts, setDebts] = useState([]);
@@ -144,6 +158,8 @@ export default function DebtsPage() {
   const [autoAddedCount, setAutoAddedCount] = useState(0);
   const [showAddDebt, setShowAddDebt] = useState(false);
   const [showAddPayment, setShowAddPayment] = useState(false);
+  const [showWhatIf, setShowWhatIf] = useState(false);
+  const [wi, setWi] = useState({ debtId: "", extra: "", lump: "" });
   const [editingId, setEditingId] = useState(null);
   const [filterCurrency, setFilterCurrency] = useState("All");
   const [chartCurrency, setChartCurrency] = useState("INR");
@@ -419,12 +435,12 @@ export default function DebtsPage() {
               <div key={idx} style={{ background: COLORS.bg, padding: "18px 20px" }}>
                 <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, margin: "0 0 8px", fontFamily: sansFont }}>{m.label}</p>
                 <p style={{ fontSize: 24, margin: 0, fontWeight: 400 }}>{m.value}</p>
-                <p style={{ fontFamily: sansFont, fontSize: 12, margin: "0 0 20px" }}>All loans in INR (USD at ₹{rate}): balance <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].currentBalance, c, rate), 0), "INR")}</b> · paid <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].totalPaid, c, rate), 0), "INR")}</b></p>
               </div>
             ))}
           </div>
         </div>
       ))}
+      <p style={{ fontFamily: sansFont, fontSize: 12, margin: "0 0 8px" }}>All loans in INR (USD at ₹{rate}): balance <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].currentBalance, c, rate), 0), "INR")}</b> · paid <b>{fmt(CURRENCIES.reduce((s, c) => s + toINR(totalsByCurrency[c].totalPaid, c, rate), 0), "INR")}</b></p>
       <p style={{ fontFamily: sansFont, fontSize: 11, color: COLORS.muted, margin: "0 0 20px" }}>"Total interest & fees paid" includes one-time processing fees on Fixed Term loans, since that's their real cost of borrowing at 0% APR.</p>
 
       <div style={{ marginBottom: 44 }}>
@@ -468,6 +484,7 @@ export default function DebtsPage() {
               <option value="principal">Sort: Principal</option>
             </select>
             <button onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))} style={btnStyleGhost}>{sortDir === "asc" ? "↑ Asc" : "↓ Desc"}</button>
+            <button onClick={() => { setWi({ debtId: debts[0]?.id || "", extra: "", lump: "" }); setShowWhatIf(true); }} style={btnStyleGhost}>What-if payoff</button>
             <button onClick={openAdd} style={btnStyle}><Plus size={13} /> Add loan</button>
           </div>
         </div>
@@ -663,6 +680,38 @@ export default function DebtsPage() {
           <button onClick={saveDebt} style={{ ...btnStyle, width: "100%", justifyContent: "center", padding: "10px 0" }}>{editingId ? "Save changes" : "Save loan"}</button>
         </Modal>
       )}
+
+      {showWhatIf && (() => {
+        const d = debtsWithStats.find((x) => x.id === wi.debtId);
+        const extra = parseAmount(wi.extra), lump = parseAmount(wi.lump);
+        let res = null;
+        if (d && d.currentBalance > 0.5) {
+          const base = simulatePayoff(d.currentBalance, d.currentApr, d.currentEmi);
+          const scen = simulatePayoff(Math.max(0, d.currentBalance - lump), d.currentApr, d.currentEmi + extra);
+          res = { base, scen };
+        }
+        const mo = (m) => (m === Infinity ? "never (payment ≤ interest)" : `${m} mo`);
+        return (
+          <Modal onClose={() => setShowWhatIf(false)} title="What-if payoff">
+            <Field label="Loan"><select style={inputStyle} value={wi.debtId} onChange={(e) => setWi({ ...wi, debtId: e.target.value })}>{debts.map((x) => <option key={x.id} value={x.id}>{x.name} ({x.currency || "INR"})</option>)}</select></Field>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Field label={`Extra per month (${d?.currency || "INR"})`}><input type="number" style={inputStyle} value={wi.extra} onChange={(e) => setWi({ ...wi, extra: e.target.value })} /></Field>
+              <Field label={`One-time prepayment now (${d?.currency || "INR"})`}><input type="number" style={inputStyle} value={wi.lump} onChange={(e) => setWi({ ...wi, lump: e.target.value })} /></Field>
+            </div>
+            {!d ? <p style={{ fontSize: 12, color: COLORS.muted }}>No loans yet.</p> : !res ? <p style={{ fontSize: 12, color: COLORS.muted }}>This loan has no balance left.</p> : (
+              <div style={{ fontFamily: sansFont, fontSize: 12, borderTop: `1px solid ${COLORS.line}`, paddingTop: 10 }}>
+                <p style={{ margin: "0 0 6px", color: COLORS.muted }}>From today: balance {fmt(d.currentBalance, d.currency)}, payment {fmt(d.currentEmi, d.currency)}, APR {d.currentApr}%.</p>
+                <p style={{ margin: "0 0 4px" }}>Current plan: <b>{mo(res.base.months)}</b>, interest {res.base.interest === Infinity ? "—" : fmt(res.base.interest, d.currency)}</p>
+                <p style={{ margin: "0 0 8px" }}>With your change: <b>{mo(res.scen.months)}</b>, interest {res.scen.interest === Infinity ? "—" : fmt(res.scen.interest, d.currency)}</p>
+                {res.base.months !== Infinity && res.scen.months !== Infinity && (
+                  <p style={{ margin: 0, color: COLORS.positive, fontWeight: 700 }}>Saves {fmt(res.base.interest - res.scen.interest, d.currency)} interest and {res.base.months - res.scen.months} months{extra || lump ? "" : " (enter an amount above)"}.</p>
+                )}
+                {d.loanStructure === "Fixed Term" && <p style={{ margin: "8px 0 0", color: COLORS.muted }}>Fixed Term loans are 0% interest: extra payments shorten the term but don't reduce interest (the processing fee is already paid).</p>}
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
 
       {showAddPayment && (
         <Modal onClose={() => setShowAddPayment(false)} title="Log a payment">

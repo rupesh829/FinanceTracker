@@ -317,6 +317,19 @@ export default function RetirementPage() {
     return { rows, tierNpv, gNpv, gTot };
   }, [family, assets, items, infl, tiers, wroi, actMap, curY]);
 
+  // Publish a one-row runway summary so the Summary page can show it.
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(async () => {
+      const rows = calc.rows, dry = rows.find((x) => x.end < 0), last = rows[rows.length - 1];
+      const row = [{ id: "latest", runsOutYear: dry ? dry.year : "", runsOutAge: dry ? dry.f : "", endBalance: Math.round(last ? last.end : 0), horizonAge: family.horizonAge, retAge: family.retAge, yield: +wroi.toFixed(2), allocatedINR: Math.round(totalPrincipal), currentEstINR: Math.round(totalL * 1e5), updated: todayStr() }];
+      const js = JSON.stringify(row);
+      if (lastSaved.current.RetirementSummary === js) return;
+      try { await setTable("RetirementSummary", row); lastSaved.current.RetirementSummary = js; } catch (e) { /* summary is best-effort */ }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [loaded, calc, wroi, totalPrincipal, totalL, family.horizonAge, family.retAge]);
+
   const alloc = useMemo(() => {
     const m = {}; tierKeys.forEach((k) => (m[k] = 0));
     const dc = (yo) => 1 / Math.pow(1 + wroi / 100, Math.max(0, yo - fo));

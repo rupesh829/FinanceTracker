@@ -8,6 +8,7 @@ export const ALL_TABS = [
   "Investments", "Income", "AssetClasses", "Debts", "DebtPayments", "Salary", "Transfers",
   "RecurringExpenses", "Expenses", "RecurringIncoming", "IncomingTransfers",
   "RetirementConfig", "RetirementExpenses", "RetirementItems", "RetirementAssets", "RetirementActuals","Settings",
+  "NetWorth", "Budgets", "RetirementSummary",
 ];
 
 export default function Backup() {
