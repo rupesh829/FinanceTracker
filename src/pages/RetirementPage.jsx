@@ -145,6 +145,7 @@ export default function RetirementPage() {
   const [invsRaw, setInvsRaw] = useState([]);
   const [actuals, setActuals] = useState([]);
   const [actualCorpus, setActualCorpus] = useState({});
+  const [incomes, setIncomes] = useState([]);
   const [ySel, setYSel] = useState(now.getFullYear());
   const [yTier, setYTier] = useState("all");
   const [yGroup, setYGroup] = useState("all");
@@ -191,6 +192,7 @@ export default function RetirementPage() {
         }
         I2.forEach((x) => { if (!G.some((g) => g.tier === x.tier && g.name === x.group)) G.push({ tier: x.tier, name: x.group }); });
         setFamily(fam); setInfl(inf); setTiers(tr); setGroups(G); setItems(I2); setActualCorpus(c.actualCorpus || {});
+        setIncomes((c.income || []).map((x) => ({ ...x, ranges: Array.isArray(x.ranges) ? x.ranges : [], ...pctPatch(x.pct || eqPct(x.targets || [])) })));
         setActuals(ac.filter((x) => x.itemId).map((x) => ({ id: String(x.id), itemId: String(x.itemId), year: parseAmount(x.year), amount: parseAmount(x.amount) })));
         setLoaded(true); setStatus("Loaded from Google Sheet");
       } catch (e) { setStatus("⚠ Could not load: " + e.message); }
@@ -201,7 +203,7 @@ export default function RetirementPage() {
     if (!loaded) return;
     const t = setTimeout(async () => {
       const tables = {
-        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "actualCorpus"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, actualCorpus][i]) })),
+        [TAB.cfg]: ["family", "inflation", "tiers", "groups", "actualCorpus", "income"].map((id, i) => ({ id, valueJSON: JSON.stringify([family, infl, tiers, groups, actualCorpus, incomes][i]) })),
         [TAB.exp]: [], [TAB.act]: actuals, [TAB.itm]: items,
         [TAB.ast]: assetsRaw.map((a) => ({ id: a.id, name: a.name, investmentId: a.investmentId, allocatedINR: a.allocatedINR, roi: a.roi, startYear: a.startYear, startMonth: a.startMonth, targets: a.targets.join(","), pctJSON: JSON.stringify(a.pct || {}) })),
       };
@@ -217,7 +219,7 @@ export default function RetirementPage() {
       } catch (e) { setStatus("⚠ Save failed: " + e.message); }
     }, 1500);
     return () => clearTimeout(t);
-  }, [loaded, family, infl, tiers, groups, items, assetsRaw, actuals, actualCorpus]);
+  }, [loaded, family, infl, tiers, groups, items, assetsRaw, actuals, actualCorpus, incomes]);
 
   const ages = { f: ageOf(family.fDob), m: ageOf(family.mDob), k1: ageOf(family.k1Dob), k2: ageOf(family.k2Dob) };
   const people = [["f", family.fName], ["m", family.mName], ["k1", family.k1Name], ["k2", family.k2Name]];
@@ -262,6 +264,13 @@ export default function RetirementPage() {
     if (!(x.isRecurring ? f >= s0 && f <= e0 && (f - s0) % ev === 0 : f === s0)) return 0;
     return annual(x) * Math.pow(1 + (infl[x.infType] || 0) / 100, f - base);
   };
+  // Side income: amount (today's rupees) paid while the chosen person's age is inside any of the ranges.
+  const incomeOf = (x, f) => {
+    if (!x.active) return 0;
+    const sh = ages.f - (ages[x.anchor || "f"] || 0);
+    if (!(x.ranges || []).some((g) => f >= g.from + sh && f <= g.to + sh)) return 0;
+    return (x.unit === "/ month" ? x.amount * 12 : x.amount) * Math.pow(1 + (x.growth || 0) / 100, f - base);
+  };
   const grow = (roi, yo) => (family.ledgerFromToday || !family.growToRet ? 1 : Math.pow(1 + roi / 100, Math.max(0, fo - yo)));
   const tierKeys = Object.keys(tiers);
 
@@ -285,11 +294,11 @@ export default function RetirementPage() {
       const act = assets.filter((a) => yoOf(a.startYear) <= ro), L = act.reduce((t, a) => t + a.allocated, 0);
       return L ? act.reduce((t, a) => t + a.allocated * a.roi, 0) / L / 100 : rd;
     };
-    const rows = [], tierNpv = {}, gNpv = {}, gTot = {};
+    const rows = [], tierNpv = {}, gNpv = {}, gTot = {}, incNpv = {};
     tierKeys.forEach((k) => (tierNpv[k] = 0));
     for (let f = first, idx = 0; f <= max; f++, idx++) {
       const off = f - base, yr = psY + off, out = {}, outAct = {}, disc = Math.pow(1 + rd, idx), r = rateAt(off), adds = joins[off] || [];
-      let plan = 0, total = 0, totalActual = 0;
+      let plan = 0, total = 0, totalActual = 0, incTotal = 0;
       tierKeys.forEach((k) => { out[k] = 0; outAct[k] = 0; });
       items.forEach((x) => {
         if (out[x.tier] === undefined) return;
@@ -305,17 +314,18 @@ export default function RetirementPage() {
           gTot[key] = (gTot[key] || 0) + v;
         }
       });
+      incomes.forEach((x) => { const v = incomeOf(x, f); incTotal += v; incNpv[x.id] = (incNpv[x.id] || 0) + v / disc; });
       const addSum = adds.reduce((t, a) => t + a.amt, 0);
       const growAdj = adds.reduce((t, a) => t + a.amt * ((1 + r) - Math.pow(1 + r, a.frac)), 0);
       
       const outlay = (yr <= curY && Object.keys(actMap).length > 0) ? totalActual : total;
       const fin = (c, t) => { const after = c + addSum - t; return after > 0 ? after * (1 + r) - growAdj : after; };
-      const end = fin(cap, outlay), endP = fin(capP, plan);
-      rows.push({ f, year: yr, m: ages.m + (f - ages.f), k1: ages.k1 + (f - ages.f), k2: ages.k2 + (f - ages.f), start: cap, added: addSum, out, total, totalActual, plan, end, endP });
+      const end = fin(cap, outlay - incTotal), endP = fin(capP, plan - incTotal);
+      rows.push({ f, year: yr, m: ages.m + (f - ages.f), k1: ages.k1 + (f - ages.f), k2: ages.k2 + (f - ages.f), start: cap, added: addSum, out, total, totalActual, plan, inc: incTotal, end, endP });
       cap = end; capP = endP;
     }
-    return { rows, tierNpv, gNpv, gTot };
-  }, [family, assets, items, infl, tiers, wroi, actMap, curY]);
+    return { rows, tierNpv, gNpv, gTot, incNpv };
+  }, [family, assets, items, infl, tiers, wroi, actMap, curY, incomes]);
 
   // Publish a one-row runway summary so the Summary page can show it.
   useEffect(() => {
@@ -337,8 +347,9 @@ export default function RetirementPage() {
       const yo = yoOf(a.startYear), v = a.allocated * 1e5 * (yo < fo ? grow(a.roi, yo) : dc(yo));
       Object.entries(a.pct || {}).forEach(([k, p]) => { if (m[k] !== undefined) m[k] += (v * p) / 100; });
     });
+    incomes.forEach((x) => Object.entries(x.pct || {}).forEach(([k, p]) => { if (m[k] !== undefined) m[k] += ((calc.incNpv[x.id] || 0) * p) / 100; }));
     return m;
-  }, [assets, tiers, family, wroi]);
+  }, [assets, tiers, family, wroi, calc, incomes]);
 
   const alerts = useMemo(() => {
     const m = {};
@@ -431,7 +442,7 @@ export default function RetirementPage() {
     roi: inv.actual > 0 ? +inv.actual.toFixed(1) : 8, startYear: +(inv.purchaseDate || "").slice(0, 4) || 0, startMonth: +(inv.purchaseDate || "").slice(5, 7) || 1, targets: [], pct: {},
   }]);
 
-  const tabs = [["setup", "Family & Inflation"], ["items", "Itemized Costs"], ["tiers", "Tier Summary"], ["assets", "Capital Portfolios"], ["yearly", "Yearly Expenses"], ["review", "Year Review"], ["tips", "Suggestions"], ["ledger", "Cash Runway"]];
+  const tabs = [["setup", "Family & Inflation"], ["items", "Itemized Costs"], ["tiers", "Tier Summary"], ["assets", "Capital Portfolios"], ["income", "Income"], ["yearly", "Yearly Expenses"], ["review", "Year Review"], ["tips", "Suggestions"], ["ledger", "Cash Runway"]];
   const inflOpts = Object.keys(infl).map((k) => [k, k]);
   const shown = items.filter((x) => (fTier === "all" || x.tier === fTier) && (fGroup === "all" || x.group === fGroup) && (!q || `${x.name} ${x.parentLine} ${x.group}`.toLowerCase().includes(q.toLowerCase())))
     .sort((a, b) => tierKeys.indexOf(a.tier) - tierKeys.indexOf(b.tier) || a.group.localeCompare(b.group));
@@ -817,6 +828,48 @@ export default function RetirementPage() {
         );
       })()}
 
+      {tab === "income" && (() => {
+        const upI = (id, patch) => setIncomes((l) => l.map((y) => (y.id === id ? { ...y, ...patch } : y)));
+        const addStream = () => setIncomes((l) => [...l, { id: nid("n"), name: "Part-time / routine work", amount: 20000, unit: "/ month", anchor: "f", ranges: [{ from: +family.retAge || ages.f, to: 60 }], growth: 0, active: true, ...pctPatch({ [tierKeys.includes("survival") ? "survival" : tierKeys[0]]: 100 }) }]);
+        const life = (x) => calc.rows.reduce((t, r) => t + incomeOf(x, r.f), 0);
+        const totalNpv = incomes.reduce((t, x) => t + (calc.incNpv[x.id] || 0), 0);
+        return (
+          <Card style={{ overflowX: "auto" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+              <button style={btnStyle} onClick={addStream}>+ Add income stream</button>
+              <span style={{ fontSize: 12 }}>Lifetime (all streams) <b>{fmtI(incomes.reduce((t, x) => t + life(x), 0))}</b> · Present value <b>{fmtI(totalNpv)}</b></span>
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 10 }}>Amounts are in today's rupees and grow by the yearly % shown. Income is paid only while the chosen person's age is inside a range, so add a separate range for each stretch (e.g. 45–50, then 52–60). It reduces yearly outlay in Cash Runway, and its present value counts toward the tiers you assign.</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+              <thead><tr>{["Income", "Amount ₹", "Person", "Active age ranges", "Growth %/yr", "Funds tiers (% each)", "Lifetime", ""].map((h) => <th key={h} style={head}>{h}</th>)}</tr></thead>
+              <tbody>
+                {incomes.map((x) => (
+                  <tr key={x.id} style={{ opacity: x.active ? 1 : 0.5 }}>
+                    <td style={cell}><I t="text" w="100%" v={x.name} on={(v) => upI(x.id, { name: v })} /><div style={{ marginTop: 4 }}><Chk v={x.active} on={(v) => upI(x.id, { active: v })} label="Active" /></div></td>
+                    <td style={cell}><I w={90} v={x.amount} on={(v) => upI(x.id, { amount: v })} /> <S v={x.unit} opts={[["/ month", "/ month"], ["/ year", "/ year"]]} on={(v) => upI(x.id, { unit: v })} /><div style={{ fontSize: 10, color: COLORS.muted }}>= {fmtI(x.unit === "/ month" ? x.amount * 12 : x.amount)} / year</div></td>
+                    <td style={cell}><S v={x.anchor} opts={people} on={(v) => upI(x.id, { anchor: v })} /></td>
+                    <td style={cell}>
+                      {(x.ranges || []).map((g, i) => (
+                        <div key={i} style={{ marginBottom: 3, whiteSpace: "nowrap" }}>
+                          <I w={50} v={g.from} on={(v) => upI(x.id, { ranges: x.ranges.map((y, j) => (j === i ? { ...y, from: v } : y)) })} /> to <I w={50} v={g.to} on={(v) => upI(x.id, { ranges: x.ranges.map((y, j) => (j === i ? { ...y, to: v } : y)) })} />
+                          {g.to < g.from && <span style={{ fontSize: 10, color: COLORS.negative }}> end &lt; start</span>} <Del on={() => upI(x.id, { ranges: x.ranges.filter((_, j) => j !== i) })}>✕</Del>
+                        </div>
+                      ))}
+                      <Del on={() => { const last = (x.ranges || []).slice(-1)[0]; upI(x.id, { ranges: [...(x.ranges || []), last ? { from: last.to + 2, to: last.to + 8 } : { from: +family.retAge || ages.f, to: 60 }] }); }}>+ Add range</Del>
+                    </td>
+                    <td style={cell}><I w={60} v={x.growth || 0} on={(v) => upI(x.id, { growth: v })} step="0.5" />%</td>
+                    <td style={cell}><PctEditor tierKeys={tierKeys} pct={x.pct} onChange={(p) => upI(x.id, pctPatch(p))} /></td>
+                    <td style={cell}>{fmtI(life(x))}<div style={{ fontSize: 10, color: COLORS.muted }}>PV {fmtI(calc.incNpv[x.id] || 0)}</div></td>
+                    <td style={cell}><Del on={() => setIncomes((l) => l.filter((y) => y.id !== x.id))} /></td>
+                  </tr>
+                ))}
+                {!incomes.length && <tr><td colSpan={8} style={{ ...cell, color: COLORS.muted }}>No income streams yet. Add part-time work, consulting or any routine income.</td></tr>}
+              </tbody>
+            </table>
+          </Card>
+        );
+      })()}
+
       {tab === "yearly" && (() => {
         const yrs = [...new Set(calc.rows.map((x) => x.year))], yy = yrs.includes(ySel) ? ySel : yrs[0];
         const f = base + (yy - psY), row = calc.rows.find((x) => x.year === yy);
@@ -908,7 +961,7 @@ export default function RetirementPage() {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead><tr>
               <th style={head}>Year</th>{[family.fName, family.mName, family.k1Name, family.k2Name].map((n, i) => <th key={i} style={head}>{n} age</th>)}
-              <th style={head}>Start balance</th><th style={head}>Added / (removed)</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Planned outlay</th><th style={head}>Actual outlay</th><th style={head}>End balance</th>
+              <th style={head}>Start balance</th><th style={head}>Added / (removed)</th>{tierKeys.map((k) => <th key={k} style={head}>{k}</th>)}<th style={head}>Planned outlay</th><th style={head}>Actual outlay</th><th style={head}>Income</th><th style={head}>End balance</th>
             </tr></thead>
             <tbody>
               {calc.rows.map((r) => (
@@ -917,6 +970,7 @@ export default function RetirementPage() {
                   <td style={cell}>{fmtI(r.start)}</td><td style={cell}>{r.added ? fmtI(r.added) : "–"}</td>{tierKeys.map((k) => <td key={k} style={cell}>{fmtI(r.out[k] || 0)}</td>)}
                   <td style={{ ...cell, color: COLORS.muted }}>{fmtI(r.total)}</td>
                   <td style={{ ...cell, color: COLORS.negative }}>{fmtI(r.totalActual)}</td>
+                  <td style={{ ...cell, color: COLORS.positive }}>{r.inc ? fmtI(r.inc) : "–"}</td>
                   <td style={{ ...cell, fontWeight: 700, color: r.end < 0 ? COLORS.negative : COLORS.positive }}>{fmtI(r.end)}</td>
                 </tr>
               ))}
